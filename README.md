@@ -53,6 +53,14 @@ The command accepts an optional k-colors argument:
 cargo run input.png output.png 16
 ```
 
+You can also override the auto-detected pixel size with `--pixel-size`:
+
+```bash
+cargo run input.png output.png --pixel-size 8
+```
+
+This is useful when the auto-detection doesn't match the expected grid size. The value must be between 1 and half the smallest image dimension.
+
 ### 🌐 Web (WASM)
 
 ```bash
