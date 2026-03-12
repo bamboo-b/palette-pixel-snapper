@@ -33,6 +33,7 @@ pub struct Config {
     min_cuts_per_axis: usize,
     fallback_target_segments: usize,
     max_step_ratio: f64,
+    pub pixel_size_override: Option<f64>,
 }
 
 impl Default for Config {
@@ -51,6 +52,7 @@ impl Default for Config {
             min_cuts_per_axis: 4,
             fallback_target_segments: 64,
             max_step_ratio: 1.8, // Lowered from 3.0 to catch more skew cases
+            pixel_size_override: None,
         }
     }
 }
@@ -105,6 +107,15 @@ fn process_image_bytes_common(input_bytes: &[u8], config: Option<Config>) -> Res
 
     validate_image_dimensions(width, height)?;
 
+    if let Some(px) = config.pixel_size_override {
+        if px < 1.0 || px > (width.min(height) as f64 / 2.0) {
+            return Err(PixelSnapperError::InvalidInput(format!(
+                "pixel_size_override {:.1} is out of valid range [1, {}]",
+                px, width.min(height) / 2
+            )));
+        }
+    }
+
     let rgba_img = img.to_rgba8();
 
     let quantized_img = quantize_image(&rgba_img, &config)?;
@@ -116,6 +127,9 @@ fn process_image_bytes_common(input_bytes: &[u8], config: Option<Config>) -> Res
 
     // Resolve step sizes. Some instabilities so use sibling axis if one fails, or fallback if both fail
     let (step_x, step_y) = resolve_step_sizes(step_x_opt, step_y_opt, width, height, &config);
+
+    println!("Pixel size: {:.1}px ({})", step_x,
+        if config.pixel_size_override.is_some() { "override" } else { "auto-detected" });
 
     let raw_col_cuts = walk(&profile_x, step_x, width as usize, &config)?;
     let raw_row_cuts = walk(&profile_y, step_y, height as usize, &config)?;
@@ -130,6 +144,8 @@ fn process_image_bytes_common(input_bytes: &[u8], config: Option<Config>) -> Res
         height as usize,
         &config,
     );
+
+    println!("Output size: {}x{}", col_cuts.len() - 1, row_cuts.len() - 1);
 
     let output_img = resample(&quantized_img, &col_cuts, &row_cuts)?;
 
@@ -179,12 +195,32 @@ fn parse_args() -> Option<Config> {
     };
 
     if let Some(k_arg) = args.get(3) {
-        match k_arg.parse::<usize>() {
-            Ok(k) if k > 0 => config.k_colors = k,
-            _ => eprintln!(
-                "Warning: invalid k_colors '{}', falling back to default ({})",
-                k_arg, config.k_colors
-            ),
+        if !k_arg.starts_with("--") {
+            match k_arg.parse::<usize>() {
+                Ok(k) if k > 0 => config.k_colors = k,
+                _ => eprintln!(
+                    "Warning: invalid k_colors '{}', falling back to default ({})",
+                    k_arg, config.k_colors
+                ),
+            }
+        }
+    }
+
+    let mut i = 3;
+    while i < args.len() {
+        if args[i] == "--pixel-size" {
+            if let Some(val) = args.get(i + 1) {
+                match val.parse::<f64>() {
+                    Ok(px) if px > 0.0 => config.pixel_size_override = Some(px),
+                    _ => eprintln!("Warning: invalid --pixel-size '{}', ignoring", val),
+                }
+                i += 2;
+            } else {
+                eprintln!("Warning: --pixel-size requires a value");
+                i += 1;
+            }
+        } else {
+            i += 1;
         }
     }
 
@@ -457,6 +493,10 @@ fn resolve_step_sizes(
     height: u32,
     config: &Config,
 ) -> (f64, f64) {
+    if let Some(px) = config.pixel_size_override {
+        return (px, px);
+    }
+
     match (step_x_opt, step_y_opt) {
         (Some(sx), Some(sy)) => {
             let ratio = if sx > sy { sx / sy } else { sy / sx };
