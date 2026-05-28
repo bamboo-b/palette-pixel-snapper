@@ -93,7 +93,7 @@ impl From<PixelSnapperError> for wasm_bindgen::JsValue {
     }
 }
 
-type Result<T> = std::result::Result<T, PixelSnapperError>;
+pub type Result<T> = std::result::Result<T, PixelSnapperError>;
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 struct ProcessedImage {
@@ -102,6 +102,69 @@ struct ProcessedImage {
     pixel_size_override: bool,
     output_width: u32,
     output_height: u32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone)]
+pub struct BatchConfig {
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
+    pub k_colors: usize,
+    pub pixel_size_override: Option<f64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<&Config> for BatchConfig {
+    fn from(config: &Config) -> Self {
+        Self {
+            input_dir: PathBuf::from(&config.input_path),
+            output_dir: PathBuf::from(&config.output_path),
+            k_colors: config.k_colors,
+            pixel_size_override: config.pixel_size_override,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<&BatchConfig> for Config {
+    fn from(config: &BatchConfig) -> Self {
+        Self {
+            k_colors: config.k_colors,
+            pixel_size_override: config.pixel_size_override,
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone)]
+pub enum BatchEvent {
+    BatchStarted {
+        input_dir: PathBuf,
+        total: usize,
+    },
+    Started {
+        input: PathBuf,
+        index: usize,
+        total: usize,
+    },
+    Finished {
+        input: PathBuf,
+        output: PathBuf,
+        index: usize,
+        total: usize,
+    },
+    Failed {
+        input: PathBuf,
+        output: PathBuf,
+        error: String,
+        index: usize,
+        total: usize,
+    },
+    BatchFinished {
+        input_dir: PathBuf,
+        total: usize,
+    },
 }
 
 /// CLI entry point
@@ -283,8 +346,70 @@ fn process_single(config: &Config) -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 fn process_batch(config: &Config) -> Result<()> {
-    let input_dir = Path::new(&config.input_path);
-    let output_dir = Path::new(&config.output_path);
+    process_batch_with_reporter(&BatchConfig::from(config), |event| match event {
+        BatchEvent::BatchStarted { input_dir, total } => {
+            println!(
+                "Batch processing {} image{} from: {}",
+                total,
+                if total == 1 { "" } else { "s" },
+                input_dir.display()
+            );
+        }
+        BatchEvent::Started {
+            input,
+            index,
+            total,
+        } => {
+            println!("Processing {}/{}: {}", index + 1, total, input.display());
+        }
+        BatchEvent::Finished {
+            input,
+            output,
+            index,
+            total,
+        } => {
+            println!(
+                "Done {}/{}: {} -> {}",
+                index + 1,
+                total,
+                input.display(),
+                output.display()
+            );
+        }
+        BatchEvent::Failed {
+            input,
+            output,
+            error,
+            index,
+            total,
+        } => {
+            eprintln!(
+                "Failed {}/{}: {} -> {} ({})",
+                index + 1,
+                total,
+                input.display(),
+                output.display(),
+                error
+            );
+        }
+        BatchEvent::BatchFinished { input_dir, total } => {
+            println!(
+                "Processed {} image{} in: {}",
+                total,
+                if total == 1 { "" } else { "s" },
+                input_dir.display()
+            );
+        }
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn process_batch_with_reporter<F>(config: &BatchConfig, reporter: F) -> Result<()>
+where
+    F: Fn(BatchEvent) + Send + Sync,
+{
+    let input_dir = &config.input_dir;
+    let output_dir = &config.output_dir;
 
     // Do not silently replace inputs; maybe that's ok though
     if input_dir == output_dir {
@@ -318,22 +443,42 @@ fn process_batch(config: &Config) -> Result<()> {
         )));
     }
 
-    println!(
-        "Batch processing {} image{} from: {}",
-        inputs.len(),
-        if inputs.len() == 1 { "" } else { "s" },
-        input_dir.display()
-    );
-
     let items: Vec<(PathBuf, PathBuf)> = inputs
         .iter()
         .map(|input| Ok((input.clone(), get_output_path(output_dir, input)?)))
         .collect::<Result<_>>()?;
 
+    reporter(BatchEvent::BatchStarted {
+        input_dir: input_dir.clone(),
+        total: items.len(),
+    });
+
     let results: Vec<(PathBuf, Result<()>)> = items
         .par_iter()
-        .map(|(input, output)| {
-            let result = process_file(input, output, config).map(|_| ());
+        .enumerate()
+        .map(|(index, (input, output))| {
+            reporter(BatchEvent::Started {
+                input: input.clone(),
+                index,
+                total: items.len(),
+            });
+            let item_config = Config::from(config);
+            let result = process_file(input, output, &item_config).map(|_| ());
+            match &result {
+                Ok(()) => reporter(BatchEvent::Finished {
+                    input: input.clone(),
+                    output: output.clone(),
+                    index,
+                    total: items.len(),
+                }),
+                Err(err) => reporter(BatchEvent::Failed {
+                    input: input.clone(),
+                    output: output.clone(),
+                    error: err.to_string(),
+                    index,
+                    total: items.len(),
+                }),
+            }
             (input.clone(), result)
         })
         .collect();
@@ -347,12 +492,10 @@ fn process_batch(config: &Config) -> Result<()> {
     }
 
     if failures.is_empty() {
-        println!(
-            "Processed {} image{} in: {}",
-            items.len(),
-            if items.len() == 1 { "" } else { "s" },
-            input_dir.display()
-        );
+        reporter(BatchEvent::BatchFinished {
+            input_dir: input_dir.clone(),
+            total: items.len(),
+        });
         Ok(())
     } else {
         Err(PixelSnapperError::ProcessingError(format!(
