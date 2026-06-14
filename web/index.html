@@ -65,6 +65,17 @@
         background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 20px 20px;
         min-height: 80px;
       }
+      .actual { margin-top: 1rem; }
+      .actual figcaption { color: #666; font-size: 0.9rem; margin-bottom: 0.25rem; }
+      .actual-box {
+        display: inline-block;
+        max-width: 100%;
+        overflow: auto;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 20px 20px;
+      }
+      #actual { display: block; image-rendering: pixelated; }
     </style>
   </head>
   <body>
@@ -110,6 +121,11 @@
       <figure><figcaption>Before</figcaption><img id="before" alt="input preview" /></figure>
       <figure><figcaption>After</figcaption><img id="after" alt="result preview" /></figure>
     </div>
+
+    <figure class="actual" id="actualFig" hidden>
+      <figcaption>Actual size (1:1) <span id="actualSize" class="hint"></span></figcaption>
+      <div class="actual-box"><img id="actual" alt="actual-size result" /></div>
+    </figure>
 
     <script type="module" src="./main.js"></script>
   </body>

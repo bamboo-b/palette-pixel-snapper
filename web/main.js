@@ -13,6 +13,9 @@ function loadImageFile(file) {
     inputBytes = new Uint8Array(buf);
     $("before").src = URL.createObjectURL(file);
     $("after").removeAttribute("src");
+    $("actual").removeAttribute("src");
+    $("actualSize").textContent = "";
+    $("actualFig").hidden = true;
     $("download").hidden = true;
     updateRunEnabled();
     setStatus("Image loaded. Ready to snap.");
@@ -195,6 +198,12 @@ function run() {
       const blob = new Blob([out], { type: "image/png" });
       const url = URL.createObjectURL(blob);
       $("after").src = url;
+      const actual = $("actual");
+      actual.onload = () => {
+        $("actualSize").textContent = `${actual.naturalWidth} × ${actual.naturalHeight} px`;
+      };
+      actual.src = url;
+      $("actualFig").hidden = false;
       const dl = $("download");
       dl.href = url;
       dl.hidden = false;
