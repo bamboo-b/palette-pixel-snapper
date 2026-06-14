@@ -34,8 +34,21 @@
         border-radius: 6px;
         resize: vertical;
       }
+      .presets { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; align-items: center; margin-top: 0.6rem; }
+      .presets .pgroup { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; }
+      .presets .pgroup b { color: #555; font-weight: 600; }
+      .presets button { padding: 0.2rem 0.55rem; font-size: 0.85rem; }
       .swatches { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 0.5rem; }
-      .swatches span { width: 22px; height: 22px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.2); }
+      .swatches span {
+        width: 22px;
+        height: 22px;
+        border-radius: 4px;
+        border: 1px solid rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+        transition: opacity 0.1s, filter 0.1s;
+      }
+      .swatches span.off { opacity: 0.25; filter: grayscale(1); }
+      .swatches span.base { outline: 2px solid #2a7; outline-offset: 1px; }
       .row { display: flex; gap: 1rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
       button { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
       button:disabled { opacity: 0.5; cursor: default; }
@@ -69,7 +82,15 @@
       <div class="row">
         <input type="file" id="paletteFile" accept=".hex,text/plain" />
       </div>
+      <div class="presets">
+        <span class="pgroup"><b>色相</b><button type="button" data-preset="warm">暖色</button><button type="button" data-preset="cool">寒色</button></span>
+        <span class="pgroup"><b>明度</b><button type="button" data-preset="light">明るい</button><button type="button" data-preset="dark">暗い</button></span>
+        <span class="pgroup"><b>彩度</b><button type="button" data-preset="vivid">鮮やか</button><button type="button" data-preset="muted">くすみ</button></span>
+        <span class="pgroup"><b>関係性</b><button type="button" data-preset="complementary">補色</button><button type="button" data-preset="analogous">類似</button><button type="button" data-preset="triadic">三色</button></span>
+        <button type="button" data-preset="all">すべてON</button>
+      </div>
       <div id="swatches" class="swatches"></div>
+      <div id="paletteCount" class="hint"></div>
     </div>
 
     <div class="row">
