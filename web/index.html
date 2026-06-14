@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pixel Snapper</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 960px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        color: #1a1a2e;
+      }
+      h1 { margin-bottom: 0.25rem; }
+      .hint { color: #666; margin-top: 0; }
+      #drop {
+        border: 2px dashed #888;
+        border-radius: 8px;
+        padding: 2rem;
+        text-align: center;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      #drop.dragover { border-color: #2a7; background: #f0fff8; }
+      .palette { margin: 1rem 0; }
+      .palette > label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+      #paletteText {
+        width: 100%;
+        box-sizing: border-box;
+        font-family: ui-monospace, monospace;
+        font-size: 0.9rem;
+        padding: 0.5rem;
+        border: 1px solid #888;
+        border-radius: 6px;
+        resize: vertical;
+      }
+      .swatches { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 0.5rem; }
+      .swatches span { width: 22px; height: 22px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.2); }
+      .row { display: flex; gap: 1rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
+      button { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #run { background: #2a7; color: #fff; border-color: #2a7; font-weight: 600; }
+      #status { min-height: 1.3em; color: #555; margin-top: 0.5rem; }
+      .previews { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+      .previews figure { flex: 1 1 320px; margin: 0; }
+      .previews figcaption { color: #666; font-size: 0.9rem; margin-bottom: 0.25rem; }
+      .previews img {
+        width: 100%;
+        image-rendering: pixelated;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 20px 20px;
+        min-height: 80px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Pixel Snapper</h1>
+    <p class="hint">Snap messy / AI-generated pixel art to a clean grid - runs fully in your browser (WASM).</p>
+
+    <div id="drop">
+      Drag &amp; drop an image here, or
+      <input type="file" id="file" accept="image/png,image/jpeg" />
+    </div>
+
+    <div class="palette">
+      <label for="paletteText">Palette <span class="hint">(optional - paste hex, or load a .hex file)</span></label>
+      <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   (or one hex per line)"></textarea>
+      <div class="row">
+        <input type="file" id="paletteFile" accept=".hex,text/plain" />
+      </div>
+      <div id="swatches" class="swatches"></div>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="limitColors" /> Limit colors</label>
+      <input type="range" id="kSlider" min="2" max="64" value="16" disabled />
+      <output id="kValue">16</output>
+      <span class="hint">(off = 16 colors)</span>
+    </div>
+
+    <div class="row">
+      <button id="run" disabled>Snap pixels</button>
+      <a id="download" download="snapped.png" hidden><button type="button">Download PNG</button></a>
+    </div>
+    <div id="status">Loading WASM...</div>
+
+    <div class="previews">
+      <figure><figcaption>Before</figcaption><img id="before" alt="input preview" /></figure>
+      <figure><figcaption>After</figcaption><img id="after" alt="result preview" /></figure>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

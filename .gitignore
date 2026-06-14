@@ -1,4 +1,5 @@
 /target
 /samples
 /pkg
+/web/pkg
 .DS_Store

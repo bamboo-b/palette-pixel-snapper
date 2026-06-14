@@ -82,6 +82,42 @@ cargo run sprites/batch_inputs sprites/batch_outputs 16 --pixel-size 8
 
 This is useful when the auto-detection doesn't match the expected grid size. The value must be between 1 and half the smallest image dimension.
 
+The k-means color selection is seeded, so results are reproducible by default. Pass `--seed` to roll a different set of representative colors — handy together with a color count or palette to explore variations:
+
+```bash
+cargo run input.png output.png 16 --seed 7
+cargo run input.png output.png --palette pico8.hex 8 --seed 7
+```
+
+### 🎨 Custom palette
+
+By default the colors are generated automatically with k-means. You can instead force a fixed palette with `--palette`. Without a color count, k-means is skipped and every pixel is snapped to its nearest palette color.
+
+Pass the colors inline as a comma-separated list of hex values:
+
+```bash
+cargo run input.png output.png --palette "#1a1a2e,#16213e,0f3460,#e94560"
+```
+
+Or point at a [Lospec](https://lospec.com/palette-list) `.hex` file (one hex color per line):
+
+```bash
+cargo run input.png output.png --palette pico8.hex
+cargo run sprites/batch_inputs sprites/batch_outputs --palette pico8.hex
+```
+
+Combine a palette with a color count to keep the palette's hues while limiting how many swatches are actually used. The image is first reduced to N colors with k-means, then each of those colors is snapped to the nearest palette entry — handy for large palettes like a 64-color set:
+
+```bash
+cargo run input.png output.png --palette resurrect-64.hex 16
+```
+
+Notes:
+- The leading `#` is optional, and both 3-digit (`#abc`) and 6-digit (`#aabbcc`) forms are accepted.
+- In a `.hex` file, blank lines and `;` comment lines are ignored.
+- With a palette and no color count, all palette colors are available. With a color count, the output uses at most that many colors.
+- Up to 256 colors. Works for both single-image and batch processing.
+
 ### 🌐 Web (WASM)
 
 ```bash
@@ -89,10 +125,10 @@ git clone https://github.com/Hugo-Dz/spritefusion-pixel-snapper.git
 cd spritefusion-pixel-snapper
 ```
 
-Build the WASM module:
+Build the WASM module into the web app folder:
 
 ```bash
-wasm-pack build --target web --out-dir pkg --release
+wasm-pack build --target web --out-dir web/pkg --release
 ```
 
 Then use the WASM module in your project:
@@ -102,11 +138,34 @@ import init, { process_image } from "./pkg/spritefusion_pixel_snapper.js";
 
 await init();
 
-// process_image(inputBytes, kColors?, pixelSizeOverride?)
+// process_image(inputBytes, kColors?, pixelSizeOverride?, paletteRgb?, seed?)
 const outputBytes = process_image(inputBytes, 16);
 ```
 
-Pass `null` for any optional argument you want to leave on its default behavior.
+Pass `undefined` (or `null`) for any optional argument you want to leave on its default behavior.
+
+`paletteRgb` is an optional flat `Uint8Array` of RGB triplets (`[r, g, b, r, g, b, ...]`, max 256 colors). When given, pixels are snapped to that palette. Passing `kColors` alongside a palette switches to "reduce to N colors via k-means, then snap to the palette".
+
+`seed` (optional, `u32`) re-seeds the k-means initialization. Different seeds discover different representative colors, so — when a color count is in play — the same image/palette yields different color combinations. It has no effect on the pure nearest-snap path (palette with no color count), which is deterministic by definition. Defaults to `42`.
+
+### 🖥️ Browser GUI
+
+A minimal drag-and-drop GUI lives in `web/`. After building the WASM module (above), serve the folder over HTTP (ES modules + wasm can't load from `file://`):
+
+```bash
+cd web
+python -m http.server 8000
+# then open http://localhost:8000/
+```
+
+Drop an image, optionally paste a palette or pick a Lospec `.hex` file, toggle "Limit colors" with the slider, and compare the before/after preview before downloading the PNG.
+
+The GUI also has:
+- **Color harmony** — color-wheel schemes (Warm, Cool, Complementary, Split-complementary, Analogous, Triadic, Tetradic, Monochrome) with two modes:
+  - *Filter set palette* — keep only the colors in your palette that fit the scheme (relational schemes use the **Base color**'s hue; neutrals are always kept). E.g. filter a palette to its warm colors for a red-ish enemy.
+  - *Generate from base* — synthesize a fresh harmonious palette around the Base color.
+- **Color picker / Add color** — build a palette by hand; click a swatch to remove it.
+- **Seed + 🎲 Randomize** — re-roll the k-means colors to get different combinations from the same palette (auto-enables "Limit colors", since the pure nearest-snap path is deterministic).
 
 ## Acknowledgments
 

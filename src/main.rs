@@ -38,6 +38,15 @@ pub struct Config {
     min_cuts_per_axis: usize,
     fallback_target_segments: usize,
     max_step_ratio: f64,
+    /// Explicit palette as RGB centroids. When set without an explicit color
+    /// count, k-means is skipped and pixels snap straight to these colors.
+    custom_palette: Option<Vec<[f32; 3]>>,
+    /// CLI-only: human-readable label for the palette source (file path or "inline").
+    #[cfg(not(target_arch = "wasm32"))]
+    palette_source: Option<String>,
+    /// Whether the user explicitly passed a color count. With a palette, this
+    /// switches from direct snapping to "k-means then snap centroids".
+    k_colors_explicit: bool,
 }
 
 impl Default for Config {
@@ -57,6 +66,10 @@ impl Default for Config {
             fallback_target_segments: 64,
             max_step_ratio: 1.8, // Lowered from 3.0 to catch more skew cases
             pixel_size_override: None,
+            custom_palette: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            palette_source: None,
+            k_colors_explicit: false,
         }
     }
 }
@@ -111,6 +124,8 @@ pub struct BatchConfig {
     pub output_dir: PathBuf,
     pub k_colors: usize,
     pub pixel_size_override: Option<f64>,
+    pub custom_palette: Option<Vec<[f32; 3]>>,
+    pub k_colors_explicit: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -121,6 +136,8 @@ impl From<&Config> for BatchConfig {
             output_dir: PathBuf::from(&config.output_path),
             k_colors: config.k_colors,
             pixel_size_override: config.pixel_size_override,
+            custom_palette: config.custom_palette.clone(),
+            k_colors_explicit: config.k_colors_explicit,
         }
     }
 }
@@ -131,6 +148,12 @@ impl From<&BatchConfig> for Config {
         Self {
             k_colors: config.k_colors,
             pixel_size_override: config.pixel_size_override,
+            custom_palette: config.custom_palette.clone(),
+            palette_source: config
+                .custom_palette
+                .as_ref()
+                .map(|_| "batch palette".to_string()),
+            k_colors_explicit: config.k_colors_explicit,
             ..Default::default()
         }
     }
@@ -249,8 +272,15 @@ pub fn process_image(
     input_bytes: &[u8],
     k_colors: Option<u32>,
     pixel_size_override: Option<f64>,
+    palette_rgb: Option<Box<[u8]>>,
+    seed: Option<u32>,
 ) -> std::result::Result<Vec<u8>, wasm_bindgen::JsValue> {
     let mut config = Config::default();
+    if let Some(s) = seed {
+        // Re-seeds k-means init, so the discovered k colors (and thus which
+        // palette colors get used in the limit-colors path) vary per seed.
+        config.k_seed = s as u64;
+    }
     if let Some(k) = k_colors {
         if k == 0 {
             return Err(wasm_bindgen::JsValue::from_str(
@@ -258,9 +288,30 @@ pub fn process_image(
             ));
         }
         config.k_colors = k as usize;
+        // Mirror the CLI: an explicit count switches palette handling to
+        // "reduce to N colors via k-means, then snap centroids to the palette".
+        config.k_colors_explicit = true;
     }
 
     config.pixel_size_override = pixel_size_override;
+
+    if let Some(flat) = palette_rgb {
+        if flat.is_empty() || flat.len() % 3 != 0 {
+            return Err(wasm_bindgen::JsValue::from_str(
+                "palette_rgb must be a non-empty multiple of 3 (flat RGB)",
+            ));
+        }
+        if flat.len() / 3 > 256 {
+            return Err(wasm_bindgen::JsValue::from_str(
+                "Palette too large (max 256 colors)",
+            ));
+        }
+        let palette: Vec<[f32; 3]> = flat
+            .chunks_exact(3)
+            .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32])
+            .collect();
+        config.custom_palette = Some(palette);
+    }
 
     process_image_bytes_common(input_bytes, Some(config))
         .map_err(|e| wasm_bindgen::JsValue::from(e))
@@ -295,13 +346,45 @@ fn parse_args() -> Option<Config> {
                 }
                 i += 2;
             }
+            "--seed" => {
+                let Some(val) = args.get(i + 1) else {
+                    eprintln!("Warning: --seed requires a value");
+                    break;
+                };
+
+                match val.parse::<u64>() {
+                    Ok(s) => config.k_seed = s,
+                    _ => eprintln!("Warning: invalid --seed '{}', ignoring", val),
+                }
+                i += 2;
+            }
+            "--palette" => {
+                let Some(val) = args.get(i + 1) else {
+                    eprintln!("Error: --palette requires a value");
+                    std::process::exit(1);
+                };
+                match resolve_palette(val) {
+                    Ok((palette, source)) => {
+                        config.custom_palette = Some(palette);
+                        config.palette_source = Some(source);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                i += 2;
+            }
             arg if arg.starts_with("--") => {
                 eprintln!("Warning: unknown argument '{}', ignoring", arg);
                 i += 1;
             }
             k_arg => {
                 match k_arg.parse::<usize>() {
-                    Ok(k) if k > 0 => config.k_colors = k,
+                    Ok(k) if k > 0 => {
+                        config.k_colors = k;
+                        config.k_colors_explicit = true;
+                    }
                     _ => eprintln!(
                         "Warning: invalid k_colors '{}', falling back to default ({})",
                         k_arg, config.k_colors
@@ -333,6 +416,9 @@ fn process_single(config: &Config) -> Result<()> {
     let output_path = Path::new(&config.output_path);
     let processed = process_file(input_path, output_path, config)?;
     println!("Processing: {}", config.input_path);
+    if let Some(msg) = palette_summary(config) {
+        println!("{}", msg);
+    }
     print_processed_image(
         processed.pixel_size,
         processed.pixel_size_override,
@@ -354,6 +440,9 @@ fn process_batch(config: &Config) -> Result<()> {
                 if total == 1 { "" } else { "s" },
                 input_dir.display()
             );
+            if let Some(msg) = palette_summary(config) {
+                println!("{}", msg);
+            }
         }
         BatchEvent::Started {
             input,
@@ -615,7 +704,205 @@ fn validate_image_dimensions(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+fn dist_sq(p: &[f32; 3], c: &[f32; 3]) -> f32 {
+    let dr = p[0] - c[0];
+    let dg = p[1] - c[1];
+    let db = p[2] - c[2];
+    dr * dr + dg * dg + db * db
+}
+
+/// Map every opaque pixel to its nearest color in `centroids`. Transparent
+/// pixels (alpha == 0) are passed through unchanged. Shared by the k-means path
+/// and the custom-palette path.
+fn map_to_palette(img: &RgbaImage, centroids: &[[f32; 3]]) -> RgbaImage {
+    let mut new_img = RgbaImage::new(img.width(), img.height());
+    for (x, y, pixel) in img.enumerate_pixels() {
+        if pixel[3] == 0 {
+            new_img.put_pixel(x, y, *pixel);
+            continue;
+        }
+        let p = [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32];
+        let mut min_dist = f32::MAX;
+        let mut best_c = [pixel[0], pixel[1], pixel[2]];
+
+        for c in centroids {
+            let d = dist_sq(&p, c);
+            if d < min_dist {
+                min_dist = d;
+                best_c = [c[0].round() as u8, c[1].round() as u8, c[2].round() as u8];
+            }
+        }
+        new_img.put_pixel(x, y, Rgba([best_c[0], best_c[1], best_c[2], pixel[3]]));
+    }
+    new_img
+}
+
+/// Parse a single hex color. The leading `#` is optional and both 3-digit
+/// (`#abc` -> `#aabbcc`) and 6-digit forms are accepted.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_hex_color(s: &str) -> Result<[f32; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    if !h.is_ascii() {
+        return Err(PixelSnapperError::InvalidInput(format!(
+            "Invalid hex color '{}': non-ascii characters",
+            s
+        )));
+    }
+    let rgb = match h.len() {
+        6 => [
+            u8::from_str_radix(&h[0..2], 16),
+            u8::from_str_radix(&h[2..4], 16),
+            u8::from_str_radix(&h[4..6], 16),
+        ],
+        3 => {
+            let dup = |c: &str| u8::from_str_radix(&format!("{0}{0}", c), 16);
+            [dup(&h[0..1]), dup(&h[1..2]), dup(&h[2..3])]
+        }
+        _ => {
+            return Err(PixelSnapperError::InvalidInput(format!(
+                "Invalid hex color '{}': expected 3 or 6 hex digits",
+                s
+            )))
+        }
+    };
+    match rgb {
+        [Ok(r), Ok(g), Ok(b)] => Ok([r as f32, g as f32, b as f32]),
+        _ => Err(PixelSnapperError::InvalidInput(format!(
+            "Invalid hex color '{}': non-hex characters",
+            s
+        ))),
+    }
+}
+
+/// Parse a comma-separated list of hex colors (e.g. `"#1a1a2e,16213e"`).
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_palette_string(s: &str) -> Result<Vec<[f32; 3]>> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(parse_hex_color)
+        .collect()
+}
+
+/// Parse a Lospec `.hex` palette file (one hex color per line; blank lines and
+/// `;` comment lines are ignored).
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_palette_file(path: &Path) -> Result<Vec<[f32; 3]>> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        PixelSnapperError::ProcessingError(format!(
+            "Failed to read palette file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with(';'))
+        .map(parse_hex_color)
+        .collect()
+}
+
+/// Resolve a `--palette` argument into RGB centroids plus a human-readable
+/// source label. The value is read as a Lospec `.hex` file when it points at an
+/// existing file or carries a `.hex` extension; otherwise it is parsed as a
+/// comma-separated list of hex colors.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_palette(value: &str) -> Result<(Vec<[f32; 3]>, String)> {
+    const MAX_PALETTE: usize = 256;
+
+    let path = Path::new(value);
+    let is_hex_file = path.is_file()
+        || path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("hex"))
+            .unwrap_or(false);
+
+    let palette = if is_hex_file {
+        parse_palette_file(path)?
+    } else {
+        parse_palette_string(value)?
+    };
+
+    if palette.is_empty() {
+        return Err(PixelSnapperError::InvalidInput(
+            "Palette is empty (no valid colors)".to_string(),
+        ));
+    }
+    if palette.len() > MAX_PALETTE {
+        return Err(PixelSnapperError::InvalidInput(format!(
+            "Palette too large: {} colors (max {})",
+            palette.len(),
+            MAX_PALETTE
+        )));
+    }
+
+    let source = if is_hex_file {
+        value.to_string()
+    } else {
+        "inline".to_string()
+    };
+    Ok((palette, source))
+}
+
+/// Snap each k-means centroid to its nearest color in `palette`. Used when a
+/// palette is combined with an explicit color count.
+fn snap_centroids_to_palette(centroids: &[[f32; 3]], palette: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    centroids
+        .iter()
+        .map(|c| {
+            let mut best = palette[0];
+            let mut min_dist = f32::MAX;
+            for p in palette {
+                let d = dist_sq(c, p);
+                if d < min_dist {
+                    min_dist = d;
+                    best = *p;
+                }
+            }
+            best
+        })
+        .collect()
+}
+
+/// One-line summary of the active palette for CLI output, or `None` when no
+/// palette is set.
+#[cfg(not(target_arch = "wasm32"))]
+fn palette_summary(config: &Config) -> Option<String> {
+    let palette = config.custom_palette.as_ref()?;
+    let source = config.palette_source.as_deref().unwrap_or("inline");
+    Some(if config.k_colors_explicit {
+        format!(
+            "Palette: {} colors (from {}), limited to {} via k-means",
+            palette.len(),
+            source,
+            config.k_colors
+        )
+    } else {
+        format!(
+            "Palette: {} colors (from {}) — k_colors ignored",
+            palette.len(),
+            source
+        )
+    })
+}
+
 fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
+    if let Some(palette) = &config.custom_palette {
+        if palette.is_empty() {
+            return Err(PixelSnapperError::InvalidInput(
+                "Palette is empty".to_string(),
+            ));
+        }
+        // Palette only: snap every pixel straight to the palette. With an
+        // explicit color count we fall through to k-means below and snap the
+        // resulting centroids to the palette instead.
+        if !config.k_colors_explicit {
+            return Ok(map_to_palette(img, palette));
+        }
+    }
+
     if config.k_colors == 0 {
         return Err(PixelSnapperError::InvalidInput(
             "Number of colors must be greater than 0".to_string(),
@@ -644,13 +931,6 @@ fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         debug_assert!(upper > 0);
         let upper = upper as u64;
         rng.gen_range(0..upper) as usize
-    }
-
-    fn dist_sq(p: &[f32; 3], c: &[f32; 3]) -> f32 {
-        let dr = p[0] - c[0];
-        let dg = p[1] - c[1];
-        let db = p[2] - c[2];
-        dr * dr + dg * dg + db * db
     }
 
     let mut centroids: Vec<[f32; 3]> = Vec::with_capacity(k);
@@ -733,26 +1013,15 @@ fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         prev_centroids.copy_from_slice(&centroids);
     }
 
-    let mut new_img = RgbaImage::new(img.width(), img.height());
-    for (x, y, pixel) in img.enumerate_pixels() {
-        if pixel[3] == 0 {
-            new_img.put_pixel(x, y, *pixel);
-            continue;
-        }
-        let p = [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32];
-        let mut min_dist = f32::MAX;
-        let mut best_c = [pixel[0], pixel[1], pixel[2]];
+    // When a palette is combined with an explicit color count, snap the k-means
+    // centroids to their nearest palette color so the output keeps the palette's
+    // hues while staying within `k_colors` swatches.
+    let centroids = match &config.custom_palette {
+        Some(palette) => snap_centroids_to_palette(&centroids, palette),
+        None => centroids,
+    };
 
-        for c in &centroids {
-            let d = dist_sq(&p, c);
-            if d < min_dist {
-                min_dist = d;
-                best_c = [c[0].round() as u8, c[1].round() as u8, c[2].round() as u8];
-            }
-        }
-        new_img.put_pixel(x, y, Rgba([best_c[0], best_c[1], best_c[2], pixel[3]]));
-    }
-    Ok(new_img)
+    Ok(map_to_palette(img, &centroids))
 }
 
 fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
@@ -1209,4 +1478,92 @@ fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage
         }
     }
     Ok(final_img)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_color_six_digits() {
+        assert_eq!(parse_hex_color("#1a1a2e").unwrap(), [26.0, 26.0, 46.0]);
+        assert_eq!(parse_hex_color("1a1a2e").unwrap(), [26.0, 26.0, 46.0]);
+    }
+
+    #[test]
+    fn parse_hex_color_three_digits_expands() {
+        assert_eq!(parse_hex_color("#abc").unwrap(), [170.0, 187.0, 204.0]);
+    }
+
+    #[test]
+    fn parse_hex_color_rejects_bad_input() {
+        assert!(parse_hex_color("zzz").is_err());
+        assert!(parse_hex_color("12345").is_err());
+        assert!(parse_hex_color("#gg0000").is_err());
+    }
+
+    #[test]
+    fn parse_palette_string_parses_multiple_and_skips_empty() {
+        let p = parse_palette_string("#fff,000,#ff0000").unwrap();
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[0], [255.0, 255.0, 255.0]);
+        assert_eq!(p[2], [255.0, 0.0, 0.0]);
+
+        let p2 = parse_palette_string("#fff,,").unwrap();
+        assert_eq!(p2.len(), 1);
+
+        let empty = parse_palette_string("").unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn resolve_palette_inline_ok() {
+        let (palette, source) = resolve_palette("#fff,#000").unwrap();
+        assert_eq!(palette.len(), 2);
+        assert_eq!(source, "inline");
+    }
+
+    #[test]
+    fn resolve_palette_rejects_empty_and_oversized() {
+        assert!(resolve_palette("").is_err());
+        assert!(resolve_palette(",,").is_err());
+
+        let big: String = std::iter::repeat("#010101")
+            .take(257)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(resolve_palette(&big).is_err());
+    }
+
+    #[test]
+    fn map_to_palette_snaps_and_preserves_transparency() {
+        let mut img = RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, Rgba([250, 250, 250, 255])); // near white
+        img.put_pixel(1, 0, Rgba([5, 5, 5, 255])); // near black
+        img.put_pixel(0, 1, Rgba([10, 10, 10, 0])); // transparent
+        img.put_pixel(1, 1, Rgba([200, 10, 10, 255])); // closest to black of {white,black}
+
+        let palette = [[255.0, 255.0, 255.0], [0.0, 0.0, 0.0]];
+        let out = map_to_palette(&img, &palette);
+
+        assert_eq!(out.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        assert_eq!(out.get_pixel(1, 0).0, [0, 0, 0, 255]);
+        // transparent pixel passes through unchanged
+        assert_eq!(out.get_pixel(0, 1).0, [10, 10, 10, 0]);
+    }
+
+    #[test]
+    fn snap_centroids_to_palette_picks_nearest() {
+        let palette = [[0.0, 0.0, 0.0], [255.0, 255.0, 255.0]];
+        let centroids = [
+            [10.0, 10.0, 10.0],
+            [240.0, 240.0, 240.0],
+            [130.0, 130.0, 130.0],
+        ];
+        let snapped = snap_centroids_to_palette(&centroids, &palette);
+        assert_eq!(snapped[0], [0.0, 0.0, 0.0]);
+        assert_eq!(snapped[1], [255.0, 255.0, 255.0]);
+        // 130 is closer to white (125^2*3) than black (130^2*3)
+        assert_eq!(snapped[2], [255.0, 255.0, 255.0]);
+    }
 }
