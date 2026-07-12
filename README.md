@@ -112,7 +112,21 @@ Combine a palette with a color count to keep the palette's hues while limiting h
 cargo run input.png output.png --palette resurrect-64.hex 16
 ```
 
+Besides Lospec `.hex` files, GIMP `.gpl` and JASC `.pal` palettes work too, and you can even point `--palette` at an image (`.png` / `.jpg`) to extract its colors — when the image has more than 64 unique colors, the palette is reduced to 64 via k-means:
+
+```bash
+cargo run input.png output.png --palette retro.gpl
+cargo run input.png output.png --palette some_reference_art.png
+```
+
+Add `--dither` to apply Floyd–Steinberg dithering against the effective palette (applied at output resolution, after the grid is resolved), which helps gradients survive small palettes:
+
+```bash
+cargo run input.png output.png --palette pico8.hex --dither
+```
+
 Notes:
+- Palette matching is perceptual: colors are compared in OKLab, not raw RGB, so snapped colors match what your eye expects.
 - The leading `#` is optional, and both 3-digit (`#abc`) and 6-digit (`#aabbcc`) forms are accepted.
 - In a `.hex` file, blank lines and `;` comment lines are ignored.
 - With a palette and no color count, all palette colors are available. With a color count, the output uses at most that many colors.
@@ -134,11 +148,11 @@ wasm-pack build --target web --out-dir web/pkg --release
 Then use the WASM module in your project:
 
 ```js
-import init, { process_image } from "./pkg/spritefusion_pixel_snapper.js";
+import init, { process_image, extract_palette } from "./pkg/spritefusion_pixel_snapper.js";
 
 await init();
 
-// process_image(inputBytes, kColors?, pixelSizeOverride?, paletteRgb?, seed?)
+// process_image(inputBytes, kColors?, pixelSizeOverride?, paletteRgb?, seed?, dither?)
 const outputBytes = process_image(inputBytes, 16);
 ```
 
@@ -147,6 +161,10 @@ Pass `undefined` (or `null`) for any optional argument you want to leave on its 
 `paletteRgb` is an optional flat `Uint8Array` of RGB triplets (`[r, g, b, r, g, b, ...]`, max 256 colors). When given, pixels are snapped to that palette. Passing `kColors` alongside a palette switches to "reduce to N colors via k-means, then snap to the palette".
 
 `seed` (optional, `u32`) re-seeds the k-means initialization. Different seeds discover different representative colors, so — when a color count is in play — the same image/palette yields different color combinations. It has no effect on the pure nearest-snap path (palette with no color count), which is deterministic by definition. Defaults to `42`.
+
+`dither` (optional, `boolean`) applies Floyd–Steinberg dithering against the effective palette at output resolution. Defaults to `false`.
+
+`extract_palette(inputBytes, maxColors?)` extracts a palette from an image: the unique opaque colors, reduced deterministically via k-means when there are more than `maxColors` (default 64, max 256). Returns a flat `Uint8Array` of RGB triplets, ready to feed into `process_image` as `paletteRgb`.
 
 ### 🖥️ Browser GUI
 
@@ -158,14 +176,15 @@ python -m http.server 8000
 # then open http://localhost:8000/
 ```
 
-Drop an image, optionally paste a palette or pick a Lospec `.hex` file, toggle "Limit colors" with the slider, and compare the before/after preview before downloading the PNG.
+Drop an image, optionally supply a palette, toggle "Limit colors" with the slider, and compare the before/after preview before downloading the PNG.
 
-The GUI also has:
-- **Color harmony** — color-wheel schemes (Warm, Cool, Complementary, Split-complementary, Analogous, Triadic, Tetradic, Monochrome) with two modes:
-  - *Filter set palette* — keep only the colors in your palette that fit the scheme (relational schemes use the **Base color**'s hue; neutrals are always kept). E.g. filter a palette to its warm colors for a red-ish enemy.
-  - *Generate from base* — synthesize a fresh harmonious palette around the Base color.
-- **Color picker / Add color** — build a palette by hand; click a swatch to remove it.
-- **Seed + 🎲 Randomize** — re-roll the k-means colors to get different combinations from the same palette (auto-enables "Limit colors", since the pure nearest-snap path is deterministic).
+The GUI's palette features:
+- **Palette input** — paste hex colors into the textarea, or load a Lospec `.hex`, GIMP `.gpl`, or JASC `.pal` file. You can also load an image (`.png` / `.jpg`) to extract its palette (reduced to 64 colors via k-means when there are more).
+- **Swatch ON/OFF curation** — every palette color appears as a swatch; click to toggle it on or off (the 使う色 counter tracks how many are active). The ON/OFF state survives textarea edits, and the enabled subset can be exported back to a `.hex` file.
+- **Concept presets** — one-click filters that keep colors matching a concept: hue (暖色/寒色), lightness (明るい/暗い), saturation (鮮やか/くすみ), and color relationships (補色/類似/三色). Judgments run in OKLCh (perceptual hue/chroma/lightness); when a palette is entirely warm or entirely cool, 暖色/寒色 fall back to splitting it into its warmer and cooler halves. Relationship presets pivot around a base color: Shift+click a swatch to choose it (green outline), or let the most saturated color be picked automatically. すべてON re-enables everything.
+- **Seed + 🎲** — re-roll the k-means colors to get different combinations. Enabled only while the seed actually matters ("Limit colors" on, or no palette); the pure nearest-snap path is deterministic.
+- **Dither** — Floyd–Steinberg dithering against the active palette, applied at output resolution.
+- **Previews** — before/after comparison plus a 1:1 actual-size view of the snapped result.
 
 ## Acknowledgments
 
