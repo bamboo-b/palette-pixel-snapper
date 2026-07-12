@@ -7,7 +7,7 @@ AI生成のドット絵や、グリッドがズレてしまったドット絵を
 - ピクセルを**きっちり等間隔のグリッド**にスナップし直し、
 - 色を**指定したパレット**（または自動生成パレット）に量子化して、
 
-「本物のドット絵」に整えて出力します。
+整った状態で出力します。
 
 <img src="./static/demo.png" alt="AI生成画像 → グリッドにスナップ → パレット適用" style="width: 100%; image-rendering: pixelated;">
 
@@ -44,7 +44,11 @@ cd palette-pixel-snapper
 
 ---
 
-## 使い方①：ブラウザGUI（一番かんたん・おすすめ）
+## 使い方①：ブラウザGUI
+
+<img src="./static/gui.png" alt="ブラウザGUIの操作画面" style="width: 100%;">
+
+<p align="center"><em>画像を読み込み、パレットを指定して before / after を確認しながら書き出せます</em></p>
 
 WASMをビルドしてから、`web/` フォルダをHTTPで配信します（ESモジュール＋wasmは `file://` から読めないため）。
 
@@ -111,7 +115,7 @@ cargo run input.png output.png --palette pico8.hex 8 --seed 7
 
 ---
 
-## 使い方③：パレットを適用する（このフォークの目玉）
+## 使い方③：パレットを適用する
 
 `--palette` で固定パレットを強制します。**色数を付けない**とk-meansをスキップし、全ピクセルを最も近いパレット色にスナップします。
 
