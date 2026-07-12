@@ -8,6 +8,8 @@ let palette = []; // { r, g, b, enabled }[] - colors parsed from the textarea
 let baseHex = null; // hex of the base color for relationship presets (keyed by value so it survives re-parses)
 let beforeUrl = null; // object URL backing #before (revoked before it is replaced)
 let outUrl = null; // object URL backing #after / #actual / #download (shared; revoked before replaced)
+let busy = false; // true while a conversion is running (prevents overlapping auto-runs)
+let autoTimer = null; // pending debounced auto-run
 
 const hexOf = (c) => [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
 
@@ -24,13 +26,18 @@ function loadImageFile(file) {
     $("actualSize").textContent = "";
     $("actualFig").hidden = true;
     $("download").hidden = true;
-    updateRunEnabled();
-    setStatus("画像を読みこんだよ。「ドット絵に整える」を押してね。");
+    autoRun(); // convert automatically — no button press needed
   });
 }
 
-function updateRunEnabled() {
-  $("run").disabled = !(ready && inputBytes);
+// Convert automatically. Discrete actions pass delay 0; continuous input
+// (typing, dragging a slider) passes a small debounce so we don't reconvert
+// on every keystroke. Does nothing until the WASM module is ready and an
+// image is loaded.
+function autoRun(delay = 0) {
+  if (!ready || !inputBytes) return;
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(run, delay);
 }
 
 function setStatus(msg) {
@@ -125,6 +132,7 @@ function renderPalette() {
       }
       c.enabled = !c.enabled;
       renderPalette();
+      autoRun();
     });
     swatches.appendChild(span);
   });
@@ -166,7 +174,7 @@ function applyPreset(name) {
   if (name === "all") {
     palette.forEach((c) => (c.enabled = true));
     renderPalette();
-    setStatus("すべての色をONにしたよ。");
+    setStatus("すべての色をオンにしました。");
     return;
   }
 
@@ -211,7 +219,7 @@ function applyPreset(name) {
     if (bi < 0) {
       palette.forEach((c) => (c.enabled = true));
       renderPalette();
-      setStatus("基準にできる鮮やかな色がない（全色ニュートラル）ので全色ONのままだよ。");
+      setStatus("基準にできる鮮やかな色がないため、すべてオンのままにします。");
       return;
     }
     baseHex = hexOf(palette[bi]);
@@ -231,25 +239,25 @@ function applyPreset(name) {
   if (on === 0) {
     palette.forEach((c) => (c.enabled = true));
     renderPalette();
-    setStatus("このパレットには該当する色がなかったので全色ONに戻したよ。");
+    setStatus("該当する色がなかったため、すべてオンに戻しました。");
     return;
   }
   renderPalette();
-  setStatus(`プリセット適用: ${on} / ${palette.length} 色を使用。`);
+  setStatus(`プリセットを適用しました（${on} / ${palette.length} 色を使用）。`);
 }
 
 function run() {
-  if (!inputBytes) return;
+  if (!ready || !inputBytes || busy) return;
+  busy = true;
   setStatus("変換中...");
-  $("run").disabled = true;
   setTimeout(() => {
     try {
       const k = $("limitColors").checked ? Number($("kSlider").value) : undefined;
       const flat = [];
       for (const c of palette) if (c.enabled) flat.push(c.r, c.g, c.b);
       if (palette.length && flat.length === 0) {
-        setStatus("全色OFFだよ。1色以上ONにしてからSnapして。");
-        return; // finally re-enables the button
+        setStatus("すべての色がオフです。1色以上をオンにしてください。");
+        return; // finally clears the busy flag
       }
       const paletteRgb = flat.length ? new Uint8Array(flat) : undefined;
       const seedRaw = $("seed").value.trim();
@@ -270,11 +278,11 @@ function run() {
       const dl = $("download");
       dl.href = outUrl;
       dl.hidden = false;
-      setStatus("できあがり！下の「画像を保存（PNG）」から保存できるよ。");
+      setStatus("変換が完了しました。「画像を保存（PNG）」から保存できます。");
     } catch (err) {
       setStatus("エラー: " + err);
     } finally {
-      $("run").disabled = false;
+      busy = false;
     }
   }, 0);
 }
@@ -299,10 +307,19 @@ drop.addEventListener("drop", (e) => loadImageFile(e.dataTransfer.files[0]));
 $("limitColors").addEventListener("change", (e) => {
   $("kSlider").disabled = !e.target.checked;
   updateSeedEnabled();
+  autoRun();
 });
-$("kSlider").addEventListener("input", (e) => ($("kValue").textContent = e.target.value));
+$("kSlider").addEventListener("input", (e) => {
+  $("kValue").textContent = e.target.value;
+  autoRun(300);
+});
+$("dither").addEventListener("change", () => autoRun());
+$("seed").addEventListener("input", () => autoRun(300));
 
-$("paletteText").addEventListener("input", refreshPalette);
+$("paletteText").addEventListener("input", () => {
+  refreshPalette();
+  autoRun(400);
+});
 
 // Convert GIMP .gpl / JASC .pal text to plain hex lines so the textarea stays
 // the single source of truth and parsePalette stays hex-only.
@@ -332,13 +349,14 @@ $("paletteFile").addEventListener("change", async (e) => {
         lines.push(hexOf({ r: flat[i], g: flat[i + 1], b: flat[i + 2] }));
       }
       $("paletteText").value = lines.join("\n");
-      setStatus(`画像から ${lines.length} 色を抽出したよ。`);
+      setStatus(`画像から ${lines.length} 色を抽出しました。`);
     } else {
       let txt = await file.text();
       if (/\.(gpl|pal)$/.test(name)) txt = paletteTextFromGplOrPal(txt, name);
       $("paletteText").value = txt;
     }
     refreshPalette();
+    autoRun();
   } catch (err) {
     setStatus("パレット読み込みエラー: " + err);
   }
@@ -347,7 +365,7 @@ $("paletteFile").addEventListener("change", async (e) => {
 $("exportHex").addEventListener("click", () => {
   const lines = palette.filter((c) => c.enabled).map(hexOf);
   if (!lines.length) {
-    setStatus("ONの色がないから書き出せないんだけど？");
+    setStatus("オンの色がないため書き出せません。");
     return;
   }
   const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
@@ -356,20 +374,21 @@ $("exportHex").addEventListener("click", () => {
   a.download = "palette.hex";
   a.click();
   URL.revokeObjectURL(a.href);
-  setStatus(`ONの ${lines.length} 色を palette.hex に書き出したよ。`);
+  setStatus(`オンの ${lines.length} 色を palette.hex に書き出しました。`);
 });
 
 $("randomSeed").addEventListener("click", () => {
   $("seed").value = Math.floor(Math.random() * 0x100000000);
-  if (ready && inputBytes) run();
+  autoRun();
 });
 
 document.querySelector(".presets").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-preset]");
-  if (btn) applyPreset(btn.dataset.preset);
+  if (btn) {
+    applyPreset(btn.dataset.preset);
+    autoRun();
+  }
 });
-
-$("run").addEventListener("click", run);
 
 // --- Left sidebar tabs: toggle aria-selected on the tab and `hidden` on its panel ---
 const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
@@ -386,7 +405,7 @@ tabs.forEach((tab) => {
 init()
   .then(() => {
     ready = true;
-    setStatus("準備OK！画像を入れてスタートしよ。");
-    updateRunEnabled();
+    setStatus(inputBytes ? "変換中..." : "画像を選ぶと自動で変換します。");
+    autoRun();
   })
-  .catch((err) => setStatus("読みこみに失敗しちゃった: " + err));
+  .catch((err) => setStatus("読み込みに失敗しました: " + err));

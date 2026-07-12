@@ -121,7 +121,6 @@
       .field > label { font-weight: 600; }
       button { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
       button:disabled { opacity: 0.5; cursor: default; }
-      #run { background: #2a7; color: #fff; border-color: #2a7; font-weight: 600; font-size: 1.05rem; padding: 0.6rem 1.4rem; }
       /* download is an <a> styled as a button (an <a> may not wrap a <button>) */
       #download {
         display: inline-block;
@@ -174,19 +173,19 @@
   <body>
     <header>
       <h1>ドット絵コンバーター</h1>
-      <p class="lead">AI画像やガタガタのドット絵を、キレイなドット絵に整えます。</p>
-      <p class="hint">ぜんぶブラウザの中で動くから、画像がどこかに送られる心配はありません。インストールも不要です。</p>
+      <p class="lead">AI画像やガタガタのドット絵を、きれいなドット絵に変換します。</p>
+      <p class="hint">処理はすべてブラウザ内で完結し、画像が外部に送信されることはありません。インストールも不要です。</p>
 
       <ol class="steps">
-        <li><b>①</b> 画像を右のワクに入れる</li>
-        <li><b>②</b>「ドット絵に整える」を押す</li>
-        <li><b>③</b> できあがりを保存する</li>
+        <li><b>①</b> 画像を右のエリアに入れる</li>
+        <li><b>②</b> 自動でドット絵に変換されます</li>
+        <li><b>③</b> 結果を保存する</li>
       </ol>
     </header>
 
     <div class="layout">
       <aside class="sidebar">
-        <p class="sidebar-note">⚙️ 設定（変えなくてもOK・そのままでキレイになります）</p>
+        <p class="sidebar-note">⚙️ 設定（変更しなくても変換できます）</p>
 
         <div class="tabs" role="tablist" aria-label="設定">
           <button type="button" role="tab" id="tabbtn-palette" aria-controls="tab-palette" aria-selected="true">パレット</button>
@@ -221,7 +220,7 @@
               <input type="range" id="kSlider" min="2" max="64" value="16" disabled aria-label="色数" />
               <output id="kValue">16</output>
             </div>
-            <div class="hint">オフのままでも、画像から自動で16色を作って減色します。オンにすると 2〜64 色で指定できます。</div>
+            <div class="hint">オフの場合も、画像から自動で16色を生成して減色します。オンにすると 2〜64 色で指定できます。</div>
           </div>
 
           <div class="field">
@@ -230,7 +229,7 @@
               <input type="number" id="seed" min="0" step="1" placeholder="42" style="width: 6em" />
               <button type="button" id="randomSeed" aria-label="ランダムなseedで引き直す" title="色選びガチャを引き直す（ランダムなseedで再実行）">🎲</button>
             </div>
-            <div class="hint">空欄なら 42。色の組み合わせが気に入らなければ 🎲 で引き直せます。</div>
+            <div class="hint">空欄の場合は 42 を使用します。🎲 でランダムに引き直せます。</div>
           </div>
 
           <div class="field">
@@ -247,10 +246,9 @@
         </div>
 
         <div class="row">
-          <button id="run" disabled>ドット絵に整える</button>
           <a id="download" download="snapped.png" hidden>画像を保存（PNG）</a>
         </div>
-        <div id="status">よみこみ中...</div>
+        <div id="status">読み込み中...</div>
 
         <div class="previews">
           <figure><figcaption>変換前（元の画像）</figcaption><img id="before" alt="元の画像" /></figure>
@@ -269,6 +267,6 @@
       ｜ MIT License ・ 本家: <a href="https://www.spritefusion.com/pixel-snapper" target="_blank" rel="noopener">Sprite Fusion Pixel Snapper</a>
     </footer>
 
-    <script type="module" src="./main.js"></script>
+    <script type="module" src="./main.js?v=3"></script>
   </body>
 </html>
