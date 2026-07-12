@@ -139,6 +139,7 @@ function renderPalette() {
   const on = palette.filter((c) => c.enabled).length;
   $("paletteCount").textContent = palette.length ? `使う色: ${on} / ${palette.length}` : "";
   updateSeedEnabled();
+  updatePresetEnabled();
 }
 
 // The seed only matters while k-means runs: with "Limit colors" on, or with no
@@ -148,6 +149,15 @@ function updateSeedEnabled() {
   const kmeansRuns = $("limitColors").checked || !palette.some((c) => c.enabled);
   $("seed").disabled = !kmeansRuns;
   $("randomSeed").disabled = !kmeansRuns;
+}
+
+// The concept presets only subset an existing palette, so with no palette loaded
+// they silently do nothing. Gray them out (and show a hint) until a palette
+// exists, mirroring updateSeedEnabled, so they don't look like working knobs.
+function updatePresetEnabled() {
+  const has = palette.length > 0;
+  document.querySelectorAll(".presets button[data-preset]").forEach((b) => (b.disabled = !has));
+  $("presetHint").hidden = has;
 }
 
 // Re-parse the textarea into `palette` and re-render. ON/OFF state is keyed by
@@ -335,9 +345,12 @@ function paletteTextFromGplOrPal(text, name) {
   return out.join("\n");
 }
 
-$("paletteFile").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
+// Load a palette from a file (picked or dropped): images are reduced to a
+// palette via WASM, .gpl/.pal are converted to hex, everything else is treated
+// as hex text. Fills the textarea, refreshes swatches, and reconverts.
+async function loadPaletteFile(file) {
   if (!file) return;
+  $("paletteFileName").textContent = file.name;
   const name = file.name.toLowerCase();
   try {
     if (file.type.startsWith("image/") || /\.(png|jpe?g)$/.test(name)) {
@@ -360,7 +373,25 @@ $("paletteFile").addEventListener("change", async (e) => {
   } catch (err) {
     setStatus("パレット読み込みエラー: " + err);
   }
-});
+}
+
+$("paletteFile").addEventListener("change", (e) => loadPaletteFile(e.target.files[0]));
+
+// Drag & drop a palette file onto the palette panel — same wiring as #drop.
+const paletteDrop = $("paletteDrop");
+["dragover", "dragenter"].forEach((ev) =>
+  paletteDrop.addEventListener(ev, (e) => {
+    e.preventDefault();
+    paletteDrop.classList.add("dragover");
+  })
+);
+["dragleave", "drop"].forEach((ev) =>
+  paletteDrop.addEventListener(ev, (e) => {
+    e.preventDefault();
+    paletteDrop.classList.remove("dragover");
+  })
+);
+paletteDrop.addEventListener("drop", (e) => loadPaletteFile(e.dataTransfer.files[0]));
 
 $("exportHex").addEventListener("click", () => {
   const lines = palette.filter((c) => c.enabled).map(hexOf);
@@ -401,6 +432,40 @@ tabs.forEach((tab) => {
     });
   });
 });
+
+// --- Theme toggle: an inline <head> script already set data-theme (OS default or
+// the saved choice); here we just flip it on click and remember the new choice. ---
+const themeToggle = $("themeToggle");
+function syncThemeIcon() {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  themeToggle.textContent = dark ? "☀️" : "🌙";
+  themeToggle.setAttribute("aria-label", dark ? "ライトモードに切り替え" : "ダークモードに切り替え");
+}
+themeToggle.addEventListener("click", () => {
+  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try {
+    localStorage.setItem("theme", next);
+  } catch (e) {
+    /* private mode / storage disabled — the toggle still works for this session */
+  }
+  syncThemeIcon();
+});
+syncThemeIcon();
+
+// --- Settings panel: shown by default on the left, collapsible via the "⚙️ 設定" toggle ---
+const settingsPanel = $("settingsPanel");
+const openSettings = $("openSettings");
+function setSettings(open) {
+  document.body.classList.toggle("settings-collapsed", !open);
+  settingsPanel.setAttribute("aria-hidden", open ? "false" : "true");
+  openSettings.setAttribute("aria-expanded", open ? "true" : "false");
+}
+openSettings.addEventListener("click", () => setSettings(document.body.classList.contains("settings-collapsed")));
+
+// Reflect the initial empty-palette state (presets disabled, hint shown) before
+// any palette is loaded; renderPalette() takes over on every change after this.
+updatePresetEnabled();
 
 init()
   .then(() => {

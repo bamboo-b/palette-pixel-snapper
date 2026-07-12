@@ -5,187 +5,459 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ドット絵コンバーター</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎨%3C/text%3E%3C/svg%3E" />
+    <!-- Japanese pixel font; the stack falls back to system fonts when offline. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet" />
+    <!-- Decide the theme before first paint (avoids a flash): saved choice wins, else follow the OS. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          if (t !== "light" && t !== "dark") {
+            t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
     <style>
+      /* ---- Design tokens (light: retro paper) ---- */
+      :root {
+        --bg: #f2eedd;
+        --dot: #ddd6bc;
+        --surface: #fbf8ec;
+        --surface-2: #eae5d0;
+        --border: #cfc8ac;
+        --border-strong: #2b2b40;
+        --text: #23233a;
+        --text-sub: #5c5c74;
+        --text-faint: #8f8fa5;
+        --accent: #0a9e5c;
+        --accent-strong: #077a47;
+        --accent-weak: #dff3e4;
+        --accent-border: #0a9e5c;
+        --accent2: #7a3cc9;
+        --checker-a: #e6e1ca;
+        --checker-b: #fbf8ec;
+        --px-shadow: #b9b193;
+        --btn-face: #fbf8ec;
+      }
+      /* ---- Design tokens (dark: neon on deep navy) ---- */
+      :root[data-theme="dark"] {
+        --bg: #0d0d1f;
+        --dot: #1b1b38;
+        --surface: #16162e;
+        --surface-2: #1d1d3a;
+        --border: #2b2b4d;
+        --border-strong: #52528a;
+        --text: #e8e8f4;
+        --text-sub: #a0a0c4;
+        --text-faint: #66668c;
+        --accent: #00e87b;
+        --accent-strong: #4dffa8;
+        --accent-weak: #0b2a1c;
+        --accent-border: #0d6e42;
+        --accent2: #b45bff;
+        --checker-a: #1d1d3a;
+        --checker-b: #26264a;
+        --px-shadow: #050510;
+        --btn-face: #1d1d3a;
+      }
+
+      * { box-sizing: border-box; }
       body {
-        font-family: system-ui, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-        max-width: 1180px;
-        margin: 2rem auto;
-        padding: 0 1rem;
-        color: #1a1a2e;
-        line-height: 1.6;
-      }
-      h1 { margin-bottom: 0.25rem; font-size: 1.6rem; }
-      .lead { color: #444; margin-top: 0; }
-      .hint { color: #666; margin-top: 0; }
-
-      /* 3-step guide */
-      .steps {
-        list-style: none;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-        padding: 0;
-        margin: 1.2rem 0;
-      }
-      .steps li {
-        flex: 1 1 200px;
-        background: #f4f9f6;
-        border: 1px solid #d6ebe0;
-        border-radius: 8px;
-        padding: 0.7rem 0.9rem;
-        font-size: 0.95rem;
-      }
-      .steps b {
-        display: inline-block;
-        min-width: 1.6em;
-        color: #2a7;
-        font-size: 1.15rem;
+        font-family: "DotGothic16", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
+        max-width: 1140px;
+        margin: 0 auto;
+        padding: 1.5rem 1rem 3rem;
+        color: var(--text);
+        background: var(--bg);
+        /* faint pixel-grid dots over the flat background */
+        background-image: radial-gradient(var(--dot) 1px, transparent 1.5px);
+        background-size: 24px 24px;
+        line-height: 1.7;
+        transition: background 0.2s ease, color 0.2s ease;
       }
 
-      /* two-pane layout: left = settings sidebar, right = workspace */
+      @keyframes blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+
+      /* ---- Header ---- */
+      h1 { margin: 0; font-size: 1.6rem; letter-spacing: 0.04em; }
+      h1::after {
+        content: "▮";
+        margin-left: 0.15em;
+        color: var(--accent);
+        animation: blink 1.2s steps(1) infinite;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        h1::after { animation: none; }
+      }
+      .lead { color: var(--text-sub); margin: 0.4rem 0 0; }
+      .badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.8rem 0 0; padding: 0; }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        font-size: 0.8rem;
+        color: var(--text-sub);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        box-shadow: 2px 2px 0 var(--px-shadow);
+        padding: 0.15rem 0.7rem;
+      }
+
+      /* ---- Toolbar (left-aligned action buttons) ---- */
+      .toolbar { display: flex; align-items: center; gap: 0.7rem; margin: 1.3rem 0 0; }
+      .pill-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        height: 40px;
+        padding: 0 0.95rem;
+        border: 2px solid var(--border-strong);
+        background: var(--btn-face);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.9rem;
+        font-weight: 600;
+        cursor: pointer;
+        box-shadow: 3px 3px 0 var(--px-shadow);
+        transition: background 0.1s, transform 0.05s, box-shadow 0.05s;
+      }
+      .pill-btn:hover { background: var(--surface-2); }
+      .pill-btn:active { transform: translate(3px, 3px); box-shadow: none; }
+      .pill-btn[aria-expanded="true"] { background: var(--accent-weak); border-color: var(--accent); color: var(--accent-strong); }
+      :root[data-theme="dark"] .pill-btn[aria-expanded="true"] { color: var(--accent); }
+      .theme-toggle {
+        flex: none;
+        width: 40px;
+        height: 40px;
+        border: 2px solid var(--border-strong);
+        background: var(--btn-face);
+        font-size: 1.1rem;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 3px 3px 0 var(--px-shadow);
+        transition: background 0.1s, transform 0.05s, box-shadow 0.05s;
+      }
+      .theme-toggle:hover { background: var(--surface-2); }
+      .theme-toggle:active { transform: translate(3px, 3px); box-shadow: none; }
+
+      /* ---- Two-pane layout; the settings pane collapses away on toggle ---- */
       .layout {
         display: grid;
-        grid-template-columns: 300px 1fr;
-        gap: 1.5rem;
+        grid-template-columns: 310px 1fr;
+        gap: 1.7rem;
         align-items: start;
-        margin-top: 1.2rem;
+        margin-top: 1.3rem;
+        transition: grid-template-columns 0.25s ease, gap 0.25s ease;
       }
+      body.settings-collapsed .layout { grid-template-columns: 0fr 1fr; gap: 0; }
+
       .sidebar {
-        border: 1px solid #ddd;
-        border-radius: 10px;
-        background: #fafafa;
-        padding: 0.6rem 0.9rem 1rem;
+        min-width: 0;
+        overflow: hidden;
+        background: var(--surface);
+        border: 2px solid var(--border-strong);
+        box-shadow: 4px 4px 0 var(--px-shadow);
+        padding: 0.9rem 1.1rem 1.1rem;
         position: sticky;
         top: 1rem;
+        transition: opacity 0.25s ease, transform 0.25s ease;
       }
-      .sidebar-note { margin: 0.2rem 0 0.6rem; font-size: 0.85rem; color: #666; }
-      .tabs {
+      body.settings-collapsed .sidebar {
+        opacity: 0;
+        transform: translateX(-110%);
+        pointer-events: none;
+      }
+      .panel-title {
         display: flex;
-        gap: 0.3rem;
-        border-bottom: 1px solid #e2e2e2;
-        margin: 0 -0.9rem 0.8rem;
-        padding: 0 0.9rem;
-      }
-      .tabs button {
-        border: none;
-        background: none;
-        padding: 0.5rem 0.6rem;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0 0 0.9rem;
         font-size: 0.95rem;
         font-weight: 600;
-        color: #777;
-        border-bottom: 2px solid transparent;
-        border-radius: 0;
-        cursor: pointer;
+        color: var(--text);
+        white-space: nowrap;
       }
-      .tabs button[aria-selected="true"] { color: #1a6; border-bottom-color: #2a7; }
+      .opt {
+        font-size: 0.7rem;
+        font-weight: 600;
+        color: var(--text-sub);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        padding: 0.05rem 0.5rem;
+      }
+
+      /* 8bit tabs: the selected tab lifts up and joins the panel below */
+      .tabs {
+        display: flex;
+        gap: 6px;
+        border-bottom: 2px solid var(--border-strong);
+        padding: 0 0 0;
+        margin-bottom: 1rem;
+      }
+      .tabs button {
+        flex: 1;
+        border: 2px solid var(--border);
+        border-bottom: none;
+        background: var(--surface-2);
+        padding: 0.4rem 0.5rem;
+        font-family: inherit;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--text-sub);
+        cursor: pointer;
+        transition: background 0.1s, color 0.1s;
+      }
+      .tabs button:hover { color: var(--text); background: var(--surface); }
+      .tabs button[aria-selected="true"] {
+        background: var(--surface);
+        border-color: var(--border-strong);
+        color: var(--accent);
+        position: relative;
+        top: 2px;
+        padding-bottom: calc(0.4rem + 2px);
+      }
       .tabpanel { margin: 0; }
 
-      #drop {
-        border: 2px dashed #888;
-        border-radius: 8px;
-        padding: 2rem;
-        text-align: center;
-        transition: background 0.15s, border-color 0.15s;
+      /* ---- Workspace: numbered steps ---- */
+      .step { margin-bottom: 1.8rem; }
+      .step-title {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        margin: 0 0 0.7rem;
+        font-size: 1.05rem;
       }
-      #drop.dragover { border-color: #2a7; background: #f0fff8; }
+      .step-num {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.6rem;
+        height: 1.6rem;
+        background: var(--accent2);
+        color: #fff;
+        font-size: 0.9rem;
+        font-weight: 700;
+        box-shadow: 2px 2px 0 var(--px-shadow);
+      }
+      .step-sub { font-size: 0.82rem; font-weight: 400; color: var(--text-sub); }
 
-      .palette { margin: 0.4rem 0 0; }
-      .palette > label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+      #drop {
+        border: 3px dashed var(--border-strong);
+        background: var(--surface);
+        padding: 2.4rem 1.5rem;
+        text-align: center;
+        color: var(--text-sub);
+        box-shadow: 4px 4px 0 var(--px-shadow);
+        transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+      }
+      #drop.dragover {
+        border-color: var(--accent);
+        background: var(--accent-weak);
+        color: var(--text);
+        box-shadow: 4px 4px 0 var(--accent-border);
+      }
+
+      /* ---- Palette panel ---- */
+      .palette { margin: 0; padding: 0.5rem; border: 2px dashed transparent; transition: background 0.15s, border-color 0.15s; }
+      #paletteDrop.dragover { border-color: var(--accent); background: var(--accent-weak); }
+      .palette > label { display: block; margin-bottom: 0.4rem; font-weight: 600; font-size: 0.9rem; }
       #paletteText {
         width: 100%;
-        box-sizing: border-box;
-        font-family: ui-monospace, monospace;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
         font-size: 0.9rem;
-        padding: 0.5rem;
-        border: 1px solid #888;
-        border-radius: 6px;
+        padding: 0.55rem;
+        color: var(--text);
+        background: var(--surface-2);
+        border: 2px solid var(--border-strong);
         resize: vertical;
       }
-      .presets { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; align-items: center; margin-top: 0.6rem; }
-      .presets .pgroup { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; }
-      .presets .pgroup b { color: #555; font-weight: 600; }
-      .presets button { padding: 0.2rem 0.55rem; font-size: 0.85rem; }
-      .swatches { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 0.5rem; }
+      #paletteText:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+      .presets { display: flex; flex-wrap: wrap; gap: 0.5rem 0.8rem; align-items: center; margin-top: 0.7rem; }
+      .presets .pgroup { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.82rem; }
+      .presets .pgroup b { color: var(--text-sub); font-weight: 600; }
+      .presets button { padding: 0.2rem 0.55rem; font-size: 0.82rem; box-shadow: 2px 2px 0 var(--px-shadow); }
+      .presets button:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: none; }
+      .swatches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 0.7rem; }
       .swatches span {
         width: 22px;
         height: 22px;
-        border-radius: 4px;
-        border: 1px solid rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(0, 0, 0, 0.35);
         cursor: pointer;
-        transition: opacity 0.1s, filter 0.1s;
+        transition: opacity 0.1s, filter 0.1s, transform 0.1s, box-shadow 0.1s;
       }
+      .swatches span:hover { transform: translate(-1px, -1px); box-shadow: 2px 2px 0 var(--px-shadow); }
       .swatches span.off { opacity: 0.25; filter: grayscale(1); }
-      .swatches span.base { outline: 2px solid #2a7; outline-offset: 1px; }
-      .row { display: flex; gap: 1rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
-      .field { margin: 0.9rem 0; }
-      .field > label { font-weight: 600; }
-      button { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
-      button:disabled { opacity: 0.5; cursor: default; }
-      /* download is an <a> styled as a button (an <a> may not wrap a <button>) */
-      #download {
+      .swatches span.base { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+      /* ---- Effect panel ---- */
+      .field { margin: 0 0 1.1rem; }
+      .field:last-child { margin-bottom: 0; }
+      .field > label { font-weight: 600; font-size: 0.9rem; }
+
+      /* ---- Rows & controls ---- */
+      .row { display: flex; gap: 0.9rem; align-items: center; margin: 0.9rem 0; flex-wrap: wrap; }
+      .hint { color: var(--text-sub); font-size: 0.85rem; margin: 0.35rem 0 0; }
+
+      input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
+      input[type="number"] {
+        font-family: inherit;
+        color: var(--text);
+        background: var(--surface-2);
+        border: 2px solid var(--border-strong);
+        padding: 0.3rem 0.4rem;
+      }
+
+      button {
+        padding: 0.45rem 0.9rem;
+        border: 2px solid var(--border-strong);
+        background: var(--btn-face);
+        color: var(--text);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 0.9rem;
+        box-shadow: 3px 3px 0 var(--px-shadow);
+        transition: background 0.1s, transform 0.05s, box-shadow 0.05s;
+      }
+      button:hover:not(:disabled) { background: var(--surface-2); }
+      button:active:not(:disabled) { transform: translate(3px, 3px); box-shadow: none; }
+      button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+      /* visually hide the native file input but keep it focusable for the label button */
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      /* a <label> styled to match the button look (button CSS does not apply to labels) */
+      .filebtn {
         display: inline-block;
         padding: 0.45rem 0.9rem;
-        border-radius: 6px;
-        border: 1px solid #2a7;
-        background: #f0fff8;
-        color: #1a6;
-        font-weight: 600;
-        text-decoration: none;
+        border: 2px solid var(--border-strong);
+        background: var(--btn-face);
+        color: var(--text);
+        cursor: pointer;
+        font-size: 0.9rem;
+        box-shadow: 3px 3px 0 var(--px-shadow);
+        transition: background 0.1s, transform 0.05s, box-shadow 0.05s;
       }
+      .filebtn:hover { background: var(--surface-2); }
+      .filebtn:active { transform: translate(3px, 3px); box-shadow: none; }
+      /* show a focus ring on the label when its hidden input is keyboard-focused */
+      #paletteFile:focus + .filebtn { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+      /* Primary action: the download button (an <a> styled as a button) */
+      #download {
+        display: inline-block;
+        padding: 0.6rem 1.2rem;
+        border: 2px solid var(--border-strong);
+        background: var(--accent);
+        color: #fff;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        text-decoration: none;
+        box-shadow: 4px 4px 0 var(--px-shadow);
+        transition: background 0.1s, transform 0.05s, box-shadow 0.05s;
+      }
+      :root[data-theme="dark"] #download { color: #06110d; }
+      #download:hover { background: var(--accent-strong); }
+      #download:active { transform: translate(4px, 4px); box-shadow: none; }
       #download[hidden] { display: none; }
-      #status { min-height: 1.3em; color: #555; margin-top: 0.5rem; }
-      .previews { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
-      .previews figure { flex: 1 1 320px; margin: 0; }
-      .previews figcaption { color: #666; font-size: 0.9rem; margin-bottom: 0.25rem; }
+      .save-wait { color: var(--text-faint); font-size: 0.85rem; }
+      /* hide the "will appear here" note once the real download button is shown */
+      #download:not([hidden]) + .save-wait { display: none; }
+
+      /* game-message-window style status line */
+      #status {
+        min-height: 1.3em;
+        color: var(--text-sub);
+        font-size: 0.9rem;
+        margin: 0 0 0.9rem;
+        padding: 0.5rem 0.75rem;
+        background: var(--surface);
+        border: 2px solid var(--border-strong);
+        box-shadow: 3px 3px 0 var(--px-shadow);
+      }
+      #status::before { content: "▶ "; color: var(--accent); }
+
+      /* ---- Previews ---- */
+      .previews { display: flex; gap: 1.2rem; flex-wrap: wrap; }
+      .previews figure { flex: 1 1 300px; margin: 0; }
+      .previews figcaption { color: var(--text-sub); font-size: 0.85rem; margin-bottom: 0.35rem; font-weight: 600; }
       .previews img {
         width: 100%;
         image-rendering: pixelated;
-        border: 1px solid #ddd;
-        border-radius: 4px;
-        background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 20px 20px;
-        min-height: 80px;
+        border: 2px solid var(--border-strong);
+        box-shadow: 4px 4px 0 var(--px-shadow);
+        background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 20px 20px;
+        min-height: 90px;
       }
-      .actual { margin-top: 1rem; }
-      .actual figcaption { color: #666; font-size: 0.9rem; margin-bottom: 0.25rem; }
+      .actual { margin: 1.2rem 0 0; }
+      .actual figcaption { color: var(--text-sub); font-size: 0.85rem; margin-bottom: 0.35rem; font-weight: 600; }
       .actual-box {
         display: inline-block;
         max-width: 100%;
         max-height: 60vh;
         overflow: auto;
-        border: 1px solid #ddd;
-        border-radius: 4px;
-        background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 20px 20px;
+        border: 2px solid var(--border-strong);
+        box-shadow: 4px 4px 0 var(--px-shadow);
+        background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 20px 20px;
       }
       #actual { display: block; image-rendering: pixelated; }
 
-      footer { margin-top: 2.5rem; color: #999; font-size: 0.85rem; border-top: 1px solid #eee; padding-top: 1rem; }
-      footer a { color: #2a7; }
+      /* ---- Footer ---- */
+      footer {
+        margin-top: 2.5rem;
+        color: var(--text-faint);
+        font-size: 0.85rem;
+        border-top: 2px solid var(--border-strong);
+        padding-top: 1rem;
+      }
+      footer a { color: var(--accent); }
 
-      /* stack to a single column on narrow screens; workspace first */
+      /* stack to a single column on narrow screens; the main flow comes first */
       @media (max-width: 760px) {
-        body { margin: 1rem auto; }
-        .layout { grid-template-columns: 1fr; gap: 1rem; }
-        .sidebar { position: static; order: 2; }
+        .layout, body.settings-collapsed .layout {
+          display: flex;
+          flex-direction: column;
+          gap: 1.2rem;
+        }
         .workspace { order: 1; }
+        .sidebar { order: 2; position: static; }
+        body.settings-collapsed .sidebar { display: none; }
       }
     </style>
   </head>
   <body>
     <header>
-      <h1>ドット絵コンバーター</h1>
+      <h1>🎨 ドット絵コンバーター</h1>
       <p class="lead">AI画像やガタガタのドット絵を、きれいなドット絵に変換します。</p>
-      <p class="hint">処理はすべてブラウザ内で完結し、画像が外部に送信されることはありません。インストールも不要です。</p>
-
-      <ol class="steps">
-        <li><b>①</b> 画像を右のエリアに入れる</li>
-        <li><b>②</b> 自動でドット絵に変換されます</li>
-        <li><b>③</b> 結果を保存する</li>
-      </ol>
+      <p class="badges">
+        <span class="badge">🔒 画像は外部に送信されません</span>
+      </p>
     </header>
 
+    <div class="toolbar">
+      <button id="openSettings" class="pill-btn" type="button" aria-expanded="true" aria-controls="settingsPanel">⚙️ 設定</button>
+      <button id="themeToggle" class="theme-toggle" type="button" aria-label="テーマを切り替え">🌙</button>
+    </div>
+
     <div class="layout">
-      <aside class="sidebar">
-        <p class="sidebar-note">⚙️ 設定（変更しなくても変換できます）</p>
+      <aside class="sidebar" id="settingsPanel" aria-label="お好みで調整">
+        <p class="panel-title">⚙️ お好みで調整 <span class="opt">任意・変えなくてもOK</span></p>
 
         <div class="tabs" role="tablist" aria-label="設定">
           <button type="button" role="tab" id="tabbtn-palette" aria-controls="tab-palette" aria-selected="true">パレット</button>
@@ -193,11 +465,13 @@
         </div>
 
         <section id="tab-palette" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-palette">
-          <div class="palette">
-            <label for="paletteText">使う色を指定 <span class="hint">(任意 — hexを貼り付け、または .hex / .gpl / .pal / 画像を読み込み)</span></label>
-            <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   （1行1色でもOK）"></textarea>
+          <div class="palette" id="paletteDrop">
+            <label for="paletteText">使う色を指定 <span class="hint" style="display: inline; font-size: 0.8rem">(任意 — 使いたい色の見本。無くても自動で減色して変換します)</span></label>
+            <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   （1行1色でもOK / .hex・.gpl・.pal・画像をここにドロップも可）"></textarea>
             <div class="row">
-              <input type="file" id="paletteFile" accept=".hex,.gpl,.pal,text/plain,image/png,image/jpeg" aria-label="パレットファイルを読み込む（.hex / .gpl / .pal / 画像）" />
+              <input type="file" id="paletteFile" class="visually-hidden" accept=".hex,.gpl,.pal,text/plain,image/png,image/jpeg" aria-label="パレットファイルを読み込む（.hex / .gpl / .pal / 画像）" />
+              <label for="paletteFile" class="filebtn">📂 ドラッグ&amp;ドロップ、またはファイルを選ぶ</label>
+              <span id="paletteFileName" class="hint" style="margin: 0">（未選択）</span>
               <button type="button" id="exportHex">ONの色を .hex で保存</button>
             </div>
             <div class="presets">
@@ -207,6 +481,7 @@
               <span class="pgroup"><b>関係性</b><button type="button" data-preset="complementary">補色</button><button type="button" data-preset="analogous">類似</button><button type="button" data-preset="triadic">三色</button></span>
               <button type="button" data-preset="all">すべてON</button>
             </div>
+            <div id="presetHint" class="hint">💡 上でパレットを読み込むと、暖色・寒色などで色を絞り込めます。</div>
             <div id="swatches" class="swatches"></div>
             <div id="paletteCount" class="hint"></div>
             <div class="hint">クリック: ON/OFF ・ Shift+クリック: 関係性プリセットの基準色を設定（緑枠）</div>
@@ -240,25 +515,32 @@
       </aside>
 
       <main class="workspace">
-        <div id="drop">
-          画像をここにドラッグ&amp;ドロップ、または
-          <input type="file" id="file" accept="image/png,image/jpeg" aria-label="画像ファイルを選ぶ" />
-        </div>
+        <section class="step">
+          <h2 class="step-title"><span class="step-num">1</span> 画像を入れる</h2>
+          <div id="drop">
+            画像をここにドラッグ&amp;ドロップ、または
+            <input type="file" id="file" accept="image/png,image/jpeg" aria-label="画像ファイルを選ぶ" />
+          </div>
+        </section>
 
-        <div class="row">
-          <a id="download" download="snapped.png" hidden>画像を保存（PNG）</a>
-        </div>
-        <div id="status">読み込み中...</div>
+        <section class="step">
+          <h2 class="step-title"><span class="step-num">2</span> 変換結果 <span class="step-sub">画像を入れると自動で変換されます</span></h2>
+          <div id="status">読み込み中...</div>
+          <div class="previews">
+            <figure><figcaption>変換前（元の画像）</figcaption><img id="before" alt="元の画像" /></figure>
+            <figure><figcaption>変換後（できあがり）</figcaption><img id="after" alt="できあがり" /></figure>
+          </div>
+          <figure class="actual" id="actualFig" hidden>
+            <figcaption>実寸（1:1）<span id="actualSize" class="hint" style="display: inline; margin: 0"></span></figcaption>
+            <div class="actual-box"><img id="actual" alt="実寸の結果" /></div>
+          </figure>
+        </section>
 
-        <div class="previews">
-          <figure><figcaption>変換前（元の画像）</figcaption><img id="before" alt="元の画像" /></figure>
-          <figure><figcaption>変換後（できあがり）</figcaption><img id="after" alt="できあがり" /></figure>
-        </div>
-
-        <figure class="actual" id="actualFig" hidden>
-          <figcaption>実寸（1:1）<span id="actualSize" class="hint"></span></figcaption>
-          <div class="actual-box"><img id="actual" alt="実寸の結果" /></div>
-        </figure>
+        <section class="step">
+          <h2 class="step-title"><span class="step-num">3</span> 保存する</h2>
+          <a id="download" download="snapped.png" hidden>▶ 画像を保存（PNG）</a>
+          <span class="save-wait" id="saveWait">変換が終わると、ここに保存ボタンが出ます。</span>
+        </section>
       </main>
     </div>
 
@@ -267,6 +549,6 @@
       ｜ MIT License ・ 本家: <a href="https://www.spritefusion.com/pixel-snapper" target="_blank" rel="noopener">Sprite Fusion Pixel Snapper</a>
     </footer>
 
-    <script type="module" src="./main.js?v=3"></script>
+    <script type="module" src="./main.js?v=7"></script>
   </body>
 </html>
