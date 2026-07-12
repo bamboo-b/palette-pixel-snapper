@@ -1,19 +1,46 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pixel Snapper</title>
+    <title>ドット絵 おなおしツール</title>
     <style>
       body {
-        font-family: system-ui, sans-serif;
+        font-family: system-ui, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
         max-width: 960px;
         margin: 2rem auto;
         padding: 0 1rem;
         color: #1a1a2e;
+        line-height: 1.6;
       }
-      h1 { margin-bottom: 0.25rem; }
+      h1 { margin-bottom: 0.25rem; font-size: 1.6rem; }
+      .lead { color: #444; margin-top: 0; }
       .hint { color: #666; margin-top: 0; }
+
+      /* 3-step guide */
+      .steps {
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        padding: 0;
+        margin: 1.2rem 0;
+      }
+      .steps li {
+        flex: 1 1 200px;
+        background: #f4f9f6;
+        border: 1px solid #d6ebe0;
+        border-radius: 8px;
+        padding: 0.7rem 0.9rem;
+        font-size: 0.95rem;
+      }
+      .steps b {
+        display: inline-block;
+        min-width: 1.6em;
+        color: #2a7;
+        font-size: 1.15rem;
+      }
+
       #drop {
         border: 2px dashed #888;
         border-radius: 8px;
@@ -22,6 +49,7 @@
         transition: background 0.15s, border-color 0.15s;
       }
       #drop.dragover { border-color: #2a7; background: #f0fff8; }
+
       .palette { margin: 1rem 0; }
       .palette > label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
       #paletteText {
@@ -52,7 +80,8 @@
       .row { display: flex; gap: 1rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
       button { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
       button:disabled { opacity: 0.5; cursor: default; }
-      #run { background: #2a7; color: #fff; border-color: #2a7; font-weight: 600; }
+      #run { background: #2a7; color: #fff; border-color: #2a7; font-weight: 600; font-size: 1.05rem; padding: 0.6rem 1.4rem; }
+      #download button { background: #f0fff8; border-color: #2a7; color: #1a6; font-weight: 600; }
       #status { min-height: 1.3em; color: #555; margin-top: 0.5rem; }
       .previews { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
       .previews figure { flex: 1 1 320px; margin: 0; }
@@ -76,61 +105,95 @@
         background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 20px 20px;
       }
       #actual { display: block; image-rendering: pixelated; }
+
+      /* advanced settings (collapsed) */
+      details.advanced {
+        margin-top: 1.5rem;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 0.4rem 0.9rem;
+        background: #fafafa;
+      }
+      details.advanced > summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 0.4rem 0;
+        color: #333;
+      }
+      details.advanced[open] > summary { border-bottom: 1px solid #eee; margin-bottom: 0.5rem; }
+      footer { margin-top: 2.5rem; color: #999; font-size: 0.85rem; border-top: 1px solid #eee; padding-top: 1rem; }
+      footer a { color: #2a7; }
     </style>
   </head>
   <body>
-    <h1>Pixel Snapper</h1>
-    <p class="hint">Snap messy / AI-generated pixel art to a clean grid - runs fully in your browser (WASM).</p>
+    <h1>ドット絵 おなおしツール</h1>
+    <p class="lead">AI画像やガタガタのドット絵を、キレイなドット絵に整えます。</p>
+    <p class="hint">ぜんぶブラウザの中で動くから、画像がどこかに送られる心配はありません。インストールも不要です。</p>
+
+    <ol class="steps">
+      <li><b>①</b> 画像を下のワクに入れる</li>
+      <li><b>②</b>「ドット絵に整える」を押す</li>
+      <li><b>③</b> できあがりを保存する</li>
+    </ol>
 
     <div id="drop">
-      Drag &amp; drop an image here, or
+      画像をここにドラッグ&amp;ドロップ、または
       <input type="file" id="file" accept="image/png,image/jpeg" />
     </div>
 
-    <div class="palette">
-      <label for="paletteText">Palette <span class="hint">(optional - paste hex, or load a .hex / .gpl / .pal file or an image)</span></label>
-      <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   (or one hex per line)"></textarea>
-      <div class="row">
-        <input type="file" id="paletteFile" accept=".hex,.gpl,.pal,text/plain,image/png,image/jpeg" />
-        <button type="button" id="exportHex">ONの色を .hex で保存</button>
-      </div>
-      <div class="presets">
-        <span class="pgroup"><b>色相</b><button type="button" data-preset="warm">暖色</button><button type="button" data-preset="cool">寒色</button></span>
-        <span class="pgroup"><b>明度</b><button type="button" data-preset="light">明るい</button><button type="button" data-preset="dark">暗い</button></span>
-        <span class="pgroup"><b>彩度</b><button type="button" data-preset="vivid">鮮やか</button><button type="button" data-preset="muted">くすみ</button></span>
-        <span class="pgroup"><b>関係性</b><button type="button" data-preset="complementary">補色</button><button type="button" data-preset="analogous">類似</button><button type="button" data-preset="triadic">三色</button></span>
-        <button type="button" data-preset="all">すべてON</button>
-      </div>
-      <div id="swatches" class="swatches"></div>
-      <div id="paletteCount" class="hint"></div>
-      <div class="hint">クリック: ON/OFF ・ Shift+クリック: 関係性プリセットの基準色を設定（緑枠）</div>
-    </div>
-
     <div class="row">
-      <label><input type="checkbox" id="limitColors" /> Limit colors</label>
-      <input type="range" id="kSlider" min="2" max="64" value="16" disabled />
-      <output id="kValue">16</output>
-      <span class="hint">(off = 16 colors)</span>
-      <label title="k-meansで色を選ぶときの乱数のタネ。同じseedなら同じ結果、変えると色の組み合わせが変わる（パレット直スナップ時は無効）">Seed <input type="number" id="seed" min="0" step="1" placeholder="42" style="width: 6em" /></label>
-      <button type="button" id="randomSeed" title="色選びガチャを引き直す（ランダムなseedで再実行）">🎲</button>
-      <label><input type="checkbox" id="dither" /> Dither</label>
+      <button id="run" disabled>ドット絵に整える</button>
+      <a id="download" download="snapped.png" hidden><button type="button">画像を保存（PNG）</button></a>
     </div>
-
-    <div class="row">
-      <button id="run" disabled>Snap pixels</button>
-      <a id="download" download="snapped.png" hidden><button type="button">Download PNG</button></a>
-    </div>
-    <div id="status">Loading WASM...</div>
+    <div id="status">よみこみ中...</div>
 
     <div class="previews">
-      <figure><figcaption>Before</figcaption><img id="before" alt="input preview" /></figure>
-      <figure><figcaption>After</figcaption><img id="after" alt="result preview" /></figure>
+      <figure><figcaption>変換前（元の画像）</figcaption><img id="before" alt="元の画像" /></figure>
+      <figure><figcaption>変換後（できあがり）</figcaption><img id="after" alt="できあがり" /></figure>
     </div>
 
     <figure class="actual" id="actualFig" hidden>
-      <figcaption>Actual size (1:1) <span id="actualSize" class="hint"></span></figcaption>
-      <div class="actual-box"><img id="actual" alt="actual-size result" /></div>
+      <figcaption>実寸（1:1）<span id="actualSize" class="hint"></span></figcaption>
+      <div class="actual-box"><img id="actual" alt="実寸の結果" /></div>
     </figure>
+
+    <details class="advanced">
+      <summary>🎨 詳しい設定（色を指定したい人向け・使わなくてもOK）</summary>
+
+      <div class="palette">
+        <label for="paletteText">使う色を指定 <span class="hint">(任意 — hexを貼り付け、または .hex / .gpl / .pal / 画像を読み込み)</span></label>
+        <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   （1行1色でもOK）"></textarea>
+        <div class="row">
+          <input type="file" id="paletteFile" accept=".hex,.gpl,.pal,text/plain,image/png,image/jpeg" />
+          <button type="button" id="exportHex">ONの色を .hex で保存</button>
+        </div>
+        <div class="presets">
+          <span class="pgroup"><b>色相</b><button type="button" data-preset="warm">暖色</button><button type="button" data-preset="cool">寒色</button></span>
+          <span class="pgroup"><b>明度</b><button type="button" data-preset="light">明るい</button><button type="button" data-preset="dark">暗い</button></span>
+          <span class="pgroup"><b>彩度</b><button type="button" data-preset="vivid">鮮やか</button><button type="button" data-preset="muted">くすみ</button></span>
+          <span class="pgroup"><b>関係性</b><button type="button" data-preset="complementary">補色</button><button type="button" data-preset="analogous">類似</button><button type="button" data-preset="triadic">三色</button></span>
+          <button type="button" data-preset="all">すべてON</button>
+        </div>
+        <div id="swatches" class="swatches"></div>
+        <div id="paletteCount" class="hint"></div>
+        <div class="hint">クリック: ON/OFF ・ Shift+クリック: 関係性プリセットの基準色を設定（緑枠）</div>
+      </div>
+
+      <div class="row">
+        <label><input type="checkbox" id="limitColors" /> 色数を減らす</label>
+        <input type="range" id="kSlider" min="2" max="64" value="16" disabled />
+        <output id="kValue">16</output>
+        <span class="hint">(オフ = 16色)</span>
+        <label title="k-meansで色を選ぶときの乱数のタネ。同じseedなら同じ結果、変えると色の組み合わせが変わる（パレット直スナップ時は無効）">Seed <input type="number" id="seed" min="0" step="1" placeholder="42" style="width: 6em" /></label>
+        <button type="button" id="randomSeed" title="色選びガチャを引き直す（ランダムなseedで再実行）">🎲</button>
+        <label title="少ない色数でもグラデーションを残しやすくする処理"><input type="checkbox" id="dither" /> ディザリング</label>
+      </div>
+    </details>
+
+    <footer>
+      <a href="https://github.com/bamboo-b/palette-pixel-snapper" target="_blank" rel="noopener">ソースコード・詳しい使い方（GitHub）</a>
+      ｜ MIT License ・ 本家: <a href="https://www.spritefusion.com/pixel-snapper" target="_blank" rel="noopener">Sprite Fusion Pixel Snapper</a>
+    </footer>
 
     <script type="module" src="./main.js"></script>
   </body>

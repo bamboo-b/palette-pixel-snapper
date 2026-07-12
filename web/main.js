@@ -20,7 +20,7 @@ function loadImageFile(file) {
     $("actualFig").hidden = true;
     $("download").hidden = true;
     updateRunEnabled();
-    setStatus("Image loaded. Ready to snap.");
+    setStatus("画像を読みこんだよ。「ドット絵に整える」を押してね。");
   });
 }
 
@@ -235,7 +235,7 @@ function applyPreset(name) {
 
 function run() {
   if (!inputBytes) return;
-  setStatus("Processing...");
+  setStatus("変換中...");
   $("run").disabled = true;
   setTimeout(() => {
     try {
@@ -263,9 +263,9 @@ function run() {
       const dl = $("download");
       dl.href = url;
       dl.hidden = false;
-      setStatus("Done.");
+      setStatus("できあがり！下の「画像を保存（PNG）」から保存できるよ。");
     } catch (err) {
-      setStatus("Error: " + err);
+      setStatus("エラー: " + err);
     } finally {
       $("run").disabled = false;
     }
@@ -367,7 +367,7 @@ $("run").addEventListener("click", run);
 init()
   .then(() => {
     ready = true;
-    setStatus("Ready. Drop an image to start.");
+    setStatus("準備OK！画像を入れてスタートしよ。");
     updateRunEnabled();
   })
-  .catch((err) => setStatus("Failed to load WASM: " + err));
+  .catch((err) => setStatus("読みこみに失敗しちゃった: " + err));

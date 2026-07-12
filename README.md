@@ -2,22 +2,27 @@
 
 **ガタガタなドット絵を、綺麗なグリッドに整え直して、好きなパレットで塗り直すツール。**
 
+## 👉 今すぐブラウザで使う（インストール不要）
+
+### **https://bamboo-b.github.io/palette-pixel-snapper/**
+
+上のURLを開くだけ。**画像を入れて、ボタンを押して、保存するだけ**でドット絵が整います。
+処理はぜんぶあなたのブラウザの中で行われるので、画像がどこかのサーバーに送られることはありません。
+
+<img src="./static/demo.png" alt="AI生成画像 → グリッドにスナップ → パレット適用" style="width: 100%; image-rendering: pixelated;">
+
+<p align="center"><em>左：AI生成の入力画像　→　中央：グリッドにスナップして整地　→　右：PICO-8パレットを適用</em></p>
+
+---
+
+## 何ができる？
+
 AI生成のドット絵や、グリッドがズレてしまったドット絵を入力すると、
 
 - ピクセルを**きっちり等間隔のグリッド**にスナップし直し、
 - 色を**指定したパレット**（または自動生成パレット）に量子化して、
 
 整った状態で出力します。
-
-<img src="./static/demo.png" alt="AI生成画像 → グリッドにスナップ → パレット適用" style="width: 100%; image-rendering: pixelated;">
-
-<p align="center"><em>左：AI生成の入力画像　→　中央：グリッドにスナップして整地　→　右：PICO-8パレットを適用</em></p>
-
-> このツールは [Hugo Duprez](https://www.hugoduprez.com/) 氏の [Sprite Fusion Pixel Snapper](https://github.com/Hugo-Dz/spritefusion-pixel-snapper) の**フォーク**です。本家の「グリッドスナップ」機能に、**任意パレットの適用**（`.hex` / `.gpl` / `.pal` / 画像からの抽出、OKLabによる知覚的な色マッチング、ディザリング、パレット編集GUI）を追加しています。
-
----
-
-## 何ができる？
 
 | 入力 | このツール | 出力 |
 |------|-----------|------|
@@ -31,24 +36,33 @@ AI生成のドット絵や、グリッドがズレてしまったドット絵を
 
 ---
 
+## 使い方（ブラウザ版）
+
+<img src="./static/gui.png" alt="ブラウザGUIの操作画面" style="width: 100%;">
+
+1. **画像をドラッグ&ドロップ**（またはファイル選択）
+2. 「**ドット絵に整える**」ボタンを押す
+3. before/after を見比べて、「**画像を保存（PNG）**」で書き出す
+
+色を指定したい人は、画面の「**🎨 詳しい設定**」を開くと、パレットの貼り付け・ファイル読み込み・色数の調整・ディザリングなどが使えます（使わなくてもOK）。
+
+---
+
+<details>
+<summary><b>🛠 開発者向け：ローカルビルド / CLI / WASM API</b>（クリックで開く）</summary>
+
 ## セットアップ
 
-[Rust](https://www.rust-lang.org/) が必要です。ブラウザGUIを使う場合は [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) も必要です。
+[Rust](https://www.rust-lang.org/) が必要です。ブラウザGUIをローカルでビルドする場合は [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) も必要です。
 
 ```bash
 git clone https://github.com/bamboo-b/palette-pixel-snapper.git
 cd palette-pixel-snapper
 ```
 
-> このフォークにはホスティング版はありません。下記の手順でローカルにビルドして使います。
+> 公開版（上記URL）は `main` への push ごとに GitHub Actions が自動ビルド・デプロイしています（`.github/workflows/deploy.yml`）。
 
----
-
-## 使い方①：ブラウザGUI
-
-<img src="./static/gui.png" alt="ブラウザGUIの操作画面" style="width: 100%;">
-
-<p align="center"><em>画像を読み込み、パレットを指定して before / after を確認しながら書き出せます</em></p>
+### ブラウザGUIをローカルで動かす
 
 WASMをビルドしてから、`web/` フォルダをHTTPで配信します（ESモジュール＋wasmは `file://` から読めないため）。
 
@@ -62,25 +76,9 @@ python -m http.server 8000
 # → ブラウザで http://localhost:8000/ を開く
 ```
 
-### GUIでの操作
-
-1. **画像をドラッグ&ドロップ**（またはファイル選択）
-2. 必要なら**パレットを指定**（下記）
-3. 「Limit colors」で使う色数を絞る（任意）
-4. before/after を見比べて、**PNGでダウンロード**
-
-パレット周りの機能：
-
-- **パレット入力** — hexコードをテキストエリアに貼り付け、または Lospec `.hex` / GIMP `.gpl` / JASC `.pal` ファイルを読み込み。画像（`.png` / `.jpg`）を読み込んでその色を抽出することも可能（65色以上ある場合はk-meansで64色に自動縮小）。
-- **スウォッチ ON/OFF** — 各色をクリックで使う/使わないを切り替え（「使う色」カウンター表示）。テキストエリアを編集してもON/OFF状態は保持され、有効な色だけを `.hex` に書き出せます。
-- **コンセプトプリセット** — ワンクリックで条件に合う色だけ残すフィルタ：色相（暖色/寒色）、明度（明るい/暗い）、彩度（鮮やか/くすみ）、色相関係（補色/類似/三色）。判定はOKLCh（知覚的な色相・彩度・明度）で行います。パレットが全部暖色/全部寒色のときは、暖色/寒色は「より暖かい半分／より冷たい半分」に分割してくれます。関係プリセットはベース色を軸に動作：スウォッチを **Shift+クリック** で選ぶ（緑枠）か、最も彩度の高い色が自動的にベースになります。「すべてON」で全色を戻せます。
-- **Seed + 🎲** — k-meansの色をランダムに引き直して別の組み合わせを試す。seedが効くとき（「Limit colors」ON、またはパレット未指定）だけ有効になります（純粋な最近傍スナップは決定論的なので無効）。
-- **Dither** — 有効パレットに対してFloyd–Steinbergディザリングを適用（出力解像度で適用）。
-- **プレビュー** — before/after比較に加え、**実寸1:1**の結果表示。
-
 ---
 
-## 使い方②：CLI
+## CLI
 
 ### 基本
 
@@ -113,9 +111,7 @@ cargo run input.png output.png 16 --seed 7
 cargo run input.png output.png --palette pico8.hex 8 --seed 7
 ```
 
----
-
-## 使い方③：パレットを適用する
+## パレットを適用する（CLI）
 
 `--palette` で固定パレットを強制します。**色数を付けない**とk-meansをスキップし、全ピクセルを最も近いパレット色にスナップします。
 
@@ -155,9 +151,7 @@ cargo run input.png output.png --palette pico8.hex --dither
 - パレット指定＋色数なし＝全パレット色が使用可能。色数ありだと最大その色数まで。
 - 最大256色。単一画像・バッチ両対応。
 
----
-
-## 使い方④：WASM API（開発者向け）
+## WASM API
 
 ビルド後、生成モジュールを読み込んで使います。
 
@@ -176,8 +170,6 @@ const outputBytes = process_image(inputBytes, 16);
 - `dither`（`boolean`、省略可）：出力解像度でFloyd–Steinbergディザを適用。デフォルト `false`。
 - `extract_palette(inputBytes, maxColors?)`：画像からパレットを抽出（不透明な一意色を、`maxColors` 超なら決定論的にk-means縮小。デフォルト64・最大256）。`process_image` の `paletteRgb` にそのまま渡せる `Uint8Array` を返します。
 
----
-
 ## パラメータ早見表（CLI）
 
 | 引数 | 意味 | 例 |
@@ -190,11 +182,15 @@ const outputBytes = process_image(inputBytes, 16);
 | `--seed <n>` | k-meansのシード | `--seed 7` |
 | `--dither` | Floyd–Steinbergディザ適用 | `--dither` |
 
+</details>
+
 ---
 
-## 謝辞
+## このツールについて
 
-本ツールは [Sprite Fusion](https://spritefusion.com) の **Pixel Snapper**（作者：Hugo Duprez）のフォークです。Sprite Fusion は Unity・Godot・Defold・GB Studio など多くのエンジンに対応した、無料のWebベース・タイルマップエディタです。本家ツール（ホスティング版・有料デスクトップ版を含む）は [spritefusion.com/pixel-snapper](https://www.spritefusion.com/pixel-snapper) にあります。
+[Hugo Duprez](https://www.hugoduprez.com/) 氏の [Sprite Fusion Pixel Snapper](https://github.com/Hugo-Dz/spritefusion-pixel-snapper) の**フォーク**です。本家の「グリッドスナップ」機能に、**任意パレットの適用**（`.hex` / `.gpl` / `.pal` / 画像からの抽出、OKLabによる知覚的な色マッチング、ディザリング、パレット編集GUI）を追加しています。
+
+Sprite Fusion は Unity・Godot・Defold・GB Studio など多くのエンジンに対応した、無料のWebベース・タイルマップエディタです。本家ツール（ホスティング版・有料デスクトップ版を含む）は [spritefusion.com/pixel-snapper](https://www.spritefusion.com/pixel-snapper) にあります。
 
 <img src="./static/spritefusion.webp" alt="Sprite Fusion" style="width: 100%;">
 
