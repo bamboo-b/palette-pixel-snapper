@@ -47,6 +47,9 @@ pub struct Config {
     /// Whether the user explicitly passed a color count. With a palette, this
     /// switches from direct snapping to "k-means then snap centroids".
     k_colors_explicit: bool,
+    /// Floyd–Steinberg dither the output against the effective palette.
+    /// Applied at output resolution, after the grid is resolved.
+    dither: bool,
 }
 
 impl Default for Config {
@@ -70,6 +73,7 @@ impl Default for Config {
             #[cfg(not(target_arch = "wasm32"))]
             palette_source: None,
             k_colors_explicit: false,
+            dither: false,
         }
     }
 }
@@ -126,6 +130,7 @@ pub struct BatchConfig {
     pub pixel_size_override: Option<f64>,
     pub custom_palette: Option<Vec<[f32; 3]>>,
     pub k_colors_explicit: bool,
+    pub dither: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -138,6 +143,7 @@ impl From<&Config> for BatchConfig {
             pixel_size_override: config.pixel_size_override,
             custom_palette: config.custom_palette.clone(),
             k_colors_explicit: config.k_colors_explicit,
+            dither: config.dither,
         }
     }
 }
@@ -154,6 +160,7 @@ impl From<&BatchConfig> for Config {
                 .as_ref()
                 .map(|_| "batch palette".to_string()),
             k_colors_explicit: config.k_colors_explicit,
+            dither: config.dither,
             ..Default::default()
         }
     }
@@ -223,7 +230,7 @@ fn process_image_common(input_bytes: &[u8], config: Option<Config>) -> Result<Pr
 
     let rgba_img = img.to_rgba8();
 
-    let quantized_img = quantize_image(&rgba_img, &config)?;
+    let (quantized_img, palette_used) = quantize_image(&rgba_img, &config)?;
     let (profile_x, profile_y) = compute_profiles(&quantized_img)?;
 
     // Estimate step sizes
@@ -247,7 +254,17 @@ fn process_image_common(input_bytes: &[u8], config: Option<Config>) -> Result<Pr
         &config,
     );
 
-    let output_img = resample(&quantized_img, &col_cuts, &row_cuts)?;
+    // Dithering is applied at output resolution, after the grid is resolved:
+    // dithering the full-size image first would be voted away by `resample`'s
+    // per-cell majority and would pollute the edge profiles used for grid
+    // detection. Cells are averaged from the original image so the dither has
+    // real gradients to diffuse.
+    let output_img = match &palette_used {
+        Some(p) if config.dither => {
+            dither_to_palette(&resample_average(&rgba_img, &col_cuts, &row_cuts)?, p)
+        }
+        _ => resample(&quantized_img, &col_cuts, &row_cuts)?,
+    };
 
     // Returns bytes for both implementations
     let mut output_bytes = Vec::new();
@@ -274,8 +291,10 @@ pub fn process_image(
     pixel_size_override: Option<f64>,
     palette_rgb: Option<Box<[u8]>>,
     seed: Option<u32>,
+    dither: Option<bool>,
 ) -> std::result::Result<Vec<u8>, wasm_bindgen::JsValue> {
     let mut config = Config::default();
+    config.dither = dither.unwrap_or(false);
     if let Some(s) = seed {
         // Re-seeds k-means init, so the discovered k colors (and thus which
         // palette colors get used in the limit-colors path) vary per seed.
@@ -357,6 +376,10 @@ fn parse_args() -> Option<Config> {
                     _ => eprintln!("Warning: invalid --seed '{}', ignoring", val),
                 }
                 i += 2;
+            }
+            "--dither" => {
+                config.dither = true;
+                i += 1;
             }
             "--palette" => {
                 let Some(val) = args.get(i + 1) else {
@@ -711,28 +734,80 @@ fn dist_sq(p: &[f32; 3], c: &[f32; 3]) -> f32 {
     dr * dr + dg * dg + db * db
 }
 
+/// sRGB channel (0-255) -> linear light (0-1).
+fn srgb_channel_to_linear(c: f32) -> f32 {
+    let c = c / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// sRGB [r,g,b] in 0-255 -> OKLab [L,a,b] (Björn Ottosson's constants).
+/// Palette matching uses OKLab because Euclidean distance in raw sRGB badly
+/// misjudges perceived similarity for dark and saturated colors.
+fn srgb_to_oklab(rgb: &[f32; 3]) -> [f32; 3] {
+    let r = srgb_channel_to_linear(rgb[0]);
+    let g = srgb_channel_to_linear(rgb[1]);
+    let b = srgb_channel_to_linear(rgb[2]);
+    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+    [
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ]
+}
+
+/// Index of the nearest color in a pre-converted OKLab palette.
+fn nearest_in_oklab(lab: &[f32; 3], palette_lab: &[[f32; 3]]) -> usize {
+    let mut best = 0;
+    let mut min_dist = f32::MAX;
+    for (i, p) in palette_lab.iter().enumerate() {
+        let d = dist_sq(lab, p);
+        if d < min_dist {
+            min_dist = d;
+            best = i;
+        }
+    }
+    best
+}
+
 /// Map every opaque pixel to its nearest color in `centroids`. Transparent
 /// pixels (alpha == 0) are passed through unchanged. Shared by the k-means path
 /// and the custom-palette path.
 fn map_to_palette(img: &RgbaImage, centroids: &[[f32; 3]]) -> RgbaImage {
+    if centroids.is_empty() {
+        return img.clone();
+    }
+    let palette_lab: Vec<[f32; 3]> = centroids.iter().map(srgb_to_oklab).collect();
+    // Pixel-art inputs have few unique colors, so memoizing pixel -> palette
+    // index keeps the OKLab conversion off the per-pixel hot path.
+    let mut memo: HashMap<[u8; 3], usize> = HashMap::new();
     let mut new_img = RgbaImage::new(img.width(), img.height());
     for (x, y, pixel) in img.enumerate_pixels() {
         if pixel[3] == 0 {
             new_img.put_pixel(x, y, *pixel);
             continue;
         }
-        let p = [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32];
-        let mut min_dist = f32::MAX;
-        let mut best_c = [pixel[0], pixel[1], pixel[2]];
-
-        for c in centroids {
-            let d = dist_sq(&p, c);
-            if d < min_dist {
-                min_dist = d;
-                best_c = [c[0].round() as u8, c[1].round() as u8, c[2].round() as u8];
-            }
-        }
-        new_img.put_pixel(x, y, Rgba([best_c[0], best_c[1], best_c[2], pixel[3]]));
+        let key = [pixel[0], pixel[1], pixel[2]];
+        let idx = *memo.entry(key).or_insert_with(|| {
+            let lab = srgb_to_oklab(&[key[0] as f32, key[1] as f32, key[2] as f32]);
+            nearest_in_oklab(&lab, &palette_lab)
+        });
+        let c = &centroids[idx];
+        new_img.put_pixel(
+            x,
+            y,
+            Rgba([
+                c[0].round() as u8,
+                c[1].round() as u8,
+                c[2].round() as u8,
+                pixel[3],
+            ]),
+        );
     }
     new_img
 }
@@ -849,20 +924,10 @@ fn resolve_palette(value: &str) -> Result<(Vec<[f32; 3]>, String)> {
 /// Snap each k-means centroid to its nearest color in `palette`. Used when a
 /// palette is combined with an explicit color count.
 fn snap_centroids_to_palette(centroids: &[[f32; 3]], palette: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    let palette_lab: Vec<[f32; 3]> = palette.iter().map(srgb_to_oklab).collect();
     centroids
         .iter()
-        .map(|c| {
-            let mut best = palette[0];
-            let mut min_dist = f32::MAX;
-            for p in palette {
-                let d = dist_sq(c, p);
-                if d < min_dist {
-                    min_dist = d;
-                    best = *p;
-                }
-            }
-            best
-        })
+        .map(|c| palette[nearest_in_oklab(&srgb_to_oklab(c), &palette_lab)])
         .collect()
 }
 
@@ -888,7 +953,11 @@ fn palette_summary(config: &Config) -> Option<String> {
     })
 }
 
-fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
+/// Quantize the image and also return the effective palette actually used
+/// (explicit palette, snapped centroids, or discovered centroids) so the
+/// optional dither pass can target the same colors. `None` only when the
+/// image had no opaque pixels.
+fn quantize_image(img: &RgbaImage, config: &Config) -> Result<(RgbaImage, Option<Vec<[f32; 3]>>)> {
     if let Some(palette) = &config.custom_palette {
         if palette.is_empty() {
             return Err(PixelSnapperError::InvalidInput(
@@ -899,7 +968,7 @@ fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         // explicit color count we fall through to k-means below and snap the
         // resulting centroids to the palette instead.
         if !config.k_colors_explicit {
-            return Ok(map_to_palette(img, palette));
+            return Ok((map_to_palette(img, palette), Some(palette.clone())));
         }
     }
 
@@ -921,11 +990,45 @@ fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         .collect();
     let n_pixels = opaque_pixels.len();
     if n_pixels == 0 {
-        return Ok(img.clone());
+        return Ok((img.clone(), None));
     }
 
-    let mut rng = ChaCha8Rng::seed_from_u64(config.k_seed);
-    let k = config.k_colors.min(n_pixels);
+    let centroids = kmeans_centroids(
+        &opaque_pixels,
+        config.k_colors,
+        config.k_seed,
+        config.max_kmeans_iterations,
+    )?;
+
+    // When a palette is combined with an explicit color count, snap the k-means
+    // centroids to their nearest palette color so the output keeps the palette's
+    // hues while staying within `k_colors` swatches.
+    let centroids = match &config.custom_palette {
+        Some(palette) => snap_centroids_to_palette(&centroids, palette),
+        None => centroids,
+    };
+
+    Ok((map_to_palette(img, &centroids), Some(centroids)))
+}
+
+/// Deterministic k-means++ (ChaCha8-seeded) over RGB pixels. Extracted from
+/// `quantize_image` so palette-from-image extraction can reuse it; the RNG
+/// sampling order must stay bit-identical to keep seeded outputs stable.
+fn kmeans_centroids(
+    opaque_pixels: &[[f32; 3]],
+    k: usize,
+    seed: u64,
+    max_iterations: usize,
+) -> Result<Vec<[f32; 3]>> {
+    let n_pixels = opaque_pixels.len();
+    if n_pixels == 0 || k == 0 {
+        return Err(PixelSnapperError::InvalidInput(
+            "k-means requires at least one pixel and one cluster".to_string(),
+        ));
+    }
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let k = k.min(n_pixels);
 
     fn sample_index(rng: &mut ChaCha8Rng, upper: usize) -> usize {
         debug_assert!(upper > 0);
@@ -964,11 +1067,11 @@ fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
     }
 
     let mut prev_centroids = centroids.clone();
-    for iteration in 0..config.max_kmeans_iterations {
+    for iteration in 0..max_iterations {
         let mut sums = vec![[0.0f32; 3]; k];
         let mut counts = vec![0usize; k];
 
-        for p in &opaque_pixels {
+        for p in opaque_pixels {
             let mut min_dist = f32::MAX;
             let mut best_k = 0;
 
@@ -1013,15 +1116,7 @@ fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         prev_centroids.copy_from_slice(&centroids);
     }
 
-    // When a palette is combined with an explicit color count, snap the k-means
-    // centroids to their nearest palette color so the output keeps the palette's
-    // hues while staying within `k_colors` swatches.
-    let centroids = match &config.custom_palette {
-        Some(palette) => snap_centroids_to_palette(&centroids, palette),
-        None => centroids,
-    };
-
-    Ok(map_to_palette(img, &centroids))
+    Ok(centroids)
 }
 
 fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
@@ -1480,6 +1575,120 @@ fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage
     Ok(final_img)
 }
 
+/// Like `resample`, but averages each cell's opaque pixels instead of taking
+/// the majority color. Cells with no opaque pixels stay fully transparent.
+/// Used as the dither input so gradients survive into the output grid.
+fn resample_average(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage> {
+    if cols.len() < 2 || rows.len() < 2 {
+        return Err(PixelSnapperError::ProcessingError(
+            "Insufficient grid cuts for resampling".to_string(),
+        ));
+    }
+
+    let out_w = (cols.len().max(1) - 1) as u32;
+    let out_h = (rows.len().max(1) - 1) as u32;
+    let mut final_img: RgbaImage = ImageBuffer::new(out_w, out_h);
+
+    for (y_i, w_y) in rows.windows(2).enumerate() {
+        for (x_i, w_x) in cols.windows(2).enumerate() {
+            let (ys, ye, xs, xe) = (w_y[0], w_y[1], w_x[0], w_x[1]);
+            if xe <= xs || ye <= ys {
+                continue;
+            }
+
+            let mut sum = [0.0f64; 4];
+            let mut count = 0usize;
+            for y in ys..ye {
+                for x in xs..xe {
+                    if x < img.width() as usize && y < img.height() as usize {
+                        let p = img.get_pixel(x as u32, y as u32).0;
+                        if p[3] == 0 {
+                            continue;
+                        }
+                        for ch in 0..4 {
+                            sum[ch] += p[ch] as f64;
+                        }
+                        count += 1;
+                    }
+                }
+            }
+
+            let pixel = if count > 0 {
+                let avg = |ch: usize| (sum[ch] / count as f64).round() as u8;
+                [avg(0), avg(1), avg(2), avg(3)]
+            } else {
+                [0, 0, 0, 0]
+            };
+            final_img.put_pixel(x_i as u32, y_i as u32, Rgba(pixel));
+        }
+    }
+    Ok(final_img)
+}
+
+/// Floyd–Steinberg dither against `palette`: error accumulated in f32 sRGB,
+/// nearest color chosen in OKLab. Transparent pixels neither receive nor emit
+/// diffused error.
+fn dither_to_palette(img: &RgbaImage, palette: &[[f32; 3]]) -> RgbaImage {
+    if palette.is_empty() {
+        return img.clone();
+    }
+    let palette_lab: Vec<[f32; 3]> = palette.iter().map(srgb_to_oklab).collect();
+    let (w, h) = img.dimensions();
+    let mut work: Vec<[f32; 3]> = img
+        .pixels()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    let mut out = RgbaImage::new(w, h);
+
+    for y in 0..h {
+        for x in 0..w {
+            let src = img.get_pixel(x, y);
+            if src[3] == 0 {
+                out.put_pixel(x, y, *src);
+                continue;
+            }
+            let idx = (y * w + x) as usize;
+            let old = [
+                work[idx][0].clamp(0.0, 255.0),
+                work[idx][1].clamp(0.0, 255.0),
+                work[idx][2].clamp(0.0, 255.0),
+            ];
+            let chosen = palette[nearest_in_oklab(&srgb_to_oklab(&old), &palette_lab)];
+            out.put_pixel(
+                x,
+                y,
+                Rgba([
+                    chosen[0].round() as u8,
+                    chosen[1].round() as u8,
+                    chosen[2].round() as u8,
+                    src[3],
+                ]),
+            );
+
+            let err = [old[0] - chosen[0], old[1] - chosen[1], old[2] - chosen[2]];
+            let mut diffuse = |dx: i64, dy: i64, weight: f32| {
+                let nx = x as i64 + dx;
+                let ny = y as i64 + dy;
+                if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
+                    return;
+                }
+                if img.get_pixel(nx as u32, ny as u32)[3] == 0 {
+                    return;
+                }
+                let n_idx = (ny as u64 * w as u64 + nx as u64) as usize;
+                for ch in 0..3 {
+                    work[n_idx][ch] += err[ch] * weight;
+                }
+            };
+            diffuse(1, 0, 7.0 / 16.0);
+            diffuse(-1, 1, 3.0 / 16.0);
+            diffuse(0, 1, 5.0 / 16.0);
+            diffuse(1, 1, 1.0 / 16.0);
+        }
+    }
+    out
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -1541,7 +1750,7 @@ mod tests {
         img.put_pixel(0, 0, Rgba([250, 250, 250, 255])); // near white
         img.put_pixel(1, 0, Rgba([5, 5, 5, 255])); // near black
         img.put_pixel(0, 1, Rgba([10, 10, 10, 0])); // transparent
-        img.put_pixel(1, 1, Rgba([200, 10, 10, 255])); // closest to black of {white,black}
+        img.put_pixel(1, 1, Rgba([200, 10, 10, 255])); // perceptually closer to white of {white,black}
 
         let palette = [[255.0, 255.0, 255.0], [0.0, 0.0, 0.0]];
         let out = map_to_palette(&img, &palette);
@@ -1550,6 +1759,86 @@ mod tests {
         assert_eq!(out.get_pixel(1, 0).0, [0, 0, 0, 255]);
         // transparent pixel passes through unchanged
         assert_eq!(out.get_pixel(0, 1).0, [10, 10, 10, 0]);
+    }
+
+    #[test]
+    fn oklab_known_values() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+
+        let white = srgb_to_oklab(&[255.0, 255.0, 255.0]);
+        assert!(close(white[0], 1.0) && close(white[1], 0.0) && close(white[2], 0.0));
+
+        let black = srgb_to_oklab(&[0.0, 0.0, 0.0]);
+        assert!(close(black[0], 0.0) && close(black[1], 0.0) && close(black[2], 0.0));
+
+        let red = srgb_to_oklab(&[255.0, 0.0, 0.0]);
+        assert!(close(red[0], 0.628) && close(red[1], 0.225) && close(red[2], 0.126));
+    }
+
+    #[test]
+    fn map_to_palette_uses_perceptual_distance() {
+        // Under raw sRGB Euclidean distance [200,10,10] snaps to black; in
+        // OKLab it is perceptually closer to white. Regression-guards the
+        // perceptual matching switch.
+        let mut img = RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, Rgba([200, 10, 10, 255]));
+        let palette = [[255.0, 255.0, 255.0], [0.0, 0.0, 0.0]];
+        let out = map_to_palette(&img, &palette);
+        assert_eq!(out.get_pixel(0, 0).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn dither_gradient_uses_both_palette_colors() {
+        // Horizontal 0..255 gray gradient dithered to {black, white} must use
+        // both colors and roughly preserve the mean luminance.
+        let w = 64u32;
+        let mut img = RgbaImage::new(w, 8);
+        for (x, _y, p) in img.enumerate_pixels_mut() {
+            let v = (x * 255 / (w - 1)) as u8;
+            *p = Rgba([v, v, v, 255]);
+        }
+        let input_mean: f64 =
+            img.pixels().map(|p| p[0] as f64).sum::<f64>() / (img.width() * img.height()) as f64;
+
+        let palette = [[0.0, 0.0, 0.0], [255.0, 255.0, 255.0]];
+        let out = dither_to_palette(&img, &palette);
+
+        let mut blacks = 0;
+        let mut whites = 0;
+        let mut out_sum = 0.0f64;
+        for p in out.pixels() {
+            match p[0] {
+                0 => blacks += 1,
+                255 => whites += 1,
+                other => panic!("unexpected color {} in dithered output", other),
+            }
+            out_sum += p[0] as f64;
+        }
+        assert!(blacks > 0 && whites > 0);
+        let out_mean = out_sum / (out.width() * out.height()) as f64;
+        assert!(
+            (out_mean - input_mean).abs() < 16.0,
+            "mean luminance drifted: in {:.1} out {:.1}",
+            input_mean,
+            out_mean
+        );
+    }
+
+    #[test]
+    fn resample_average_handles_transparency() {
+        // 4x2 image, 2x1 cells: left cell has 2 opaque + 2 transparent pixels
+        // (average of opaque only), right cell is fully transparent.
+        let mut img = RgbaImage::new(4, 2);
+        img.put_pixel(0, 0, Rgba([100, 0, 0, 255]));
+        img.put_pixel(1, 0, Rgba([200, 0, 0, 255]));
+        img.put_pixel(0, 1, Rgba([9, 9, 9, 0]));
+        img.put_pixel(1, 1, Rgba([9, 9, 9, 0]));
+        // pixels (2..4, 0..2) stay default transparent black
+
+        let out = resample_average(&img, &[0, 2, 4], &[0, 2]).unwrap();
+        assert_eq!(out.dimensions(), (2, 1));
+        assert_eq!(out.get_pixel(0, 0).0, [150, 0, 0, 255]);
+        assert_eq!(out.get_pixel(1, 0).0[3], 0);
     }
 
     #[test]
@@ -1563,7 +1852,7 @@ mod tests {
         let snapped = snap_centroids_to_palette(&centroids, &palette);
         assert_eq!(snapped[0], [0.0, 0.0, 0.0]);
         assert_eq!(snapped[1], [255.0, 255.0, 255.0]);
-        // 130 is closer to white (125^2*3) than black (130^2*3)
+        // 130-gray is closer to white in OKLab too (L ≈ 0.60)
         assert_eq!(snapped[2], [255.0, 255.0, 255.0]);
     }
 }
