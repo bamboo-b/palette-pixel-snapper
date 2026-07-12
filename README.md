@@ -9,7 +9,9 @@ AI生成のドット絵や、グリッドがズレてしまったドット絵を
 
 「本物のドット絵」に整えて出力します。
 
-<img src="./static/hero.png" alt="Palette Pixel Snapper" style="width: 100%; image-rendering: pixelated;">
+<img src="./static/demo.png" alt="AI生成画像 → グリッドにスナップ → パレット適用" style="width: 100%; image-rendering: pixelated;">
+
+<p align="center"><em>左：AI生成の入力画像　→　中央：グリッドにスナップして整地　→　右：PICO-8パレットを適用</em></p>
 
 > このツールは [Hugo Duprez](https://www.hugoduprez.com/) 氏の [Sprite Fusion Pixel Snapper](https://github.com/Hugo-Dz/spritefusion-pixel-snapper) の**フォーク**です。本家の「グリッドスナップ」機能に、**任意パレットの適用**（`.hex` / `.gpl` / `.pal` / 画像からの抽出、OKLabによる知覚的な色マッチング、ディザリング、パレット編集GUI）を追加しています。
 
