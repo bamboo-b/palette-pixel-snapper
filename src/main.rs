@@ -336,6 +336,23 @@ pub fn process_image(
         .map_err(|e| wasm_bindgen::JsValue::from(e))
 }
 
+/// Extract a palette from an image (unique opaque colors, reduced via k-means
+/// when there are more than `max_colors`). Returns flat `[r,g,b, ...]` bytes.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn extract_palette(
+    input_bytes: &[u8],
+    max_colors: Option<u32>,
+) -> std::result::Result<Vec<u8>, wasm_bindgen::JsValue> {
+    let max = max_colors.unwrap_or(64).clamp(1, 256) as usize;
+    let (palette, _unique) =
+        palette_from_image_bytes(input_bytes, max).map_err(wasm_bindgen::JsValue::from)?;
+    Ok(palette
+        .iter()
+        .flat_map(|c| c.iter().map(|v| v.round().clamp(0.0, 255.0) as u8))
+        .collect())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 fn parse_args() -> Option<Config> {
@@ -859,8 +876,119 @@ fn parse_palette_string(s: &str) -> Result<Vec<[f32; 3]>> {
         .collect()
 }
 
-/// Parse a Lospec `.hex` palette file (one hex color per line; blank lines and
-/// `;` comment lines are ignored).
+/// Parse a GIMP `.gpl` palette: "GIMP Palette" header, `#` comments, optional
+/// `Name:`/`Columns:` lines, then `R G B [name]` rows.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_gpl(content: &str) -> Result<Vec<[f32; 3]>> {
+    let mut lines = content.lines().map(str::trim);
+    if !matches!(lines.next(), Some(first) if first.starts_with("GIMP Palette")) {
+        return Err(PixelSnapperError::InvalidInput(
+            "Not a GIMP palette: missing 'GIMP Palette' header".to_string(),
+        ));
+    }
+
+    let mut palette = Vec::new();
+    for line in lines {
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with("Name:")
+            || line.starts_with("Columns:")
+        {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let rgb: Option<[u8; 3]> = (|| {
+            let r = parts.next()?.parse().ok()?;
+            let g = parts.next()?.parse().ok()?;
+            let b = parts.next()?.parse().ok()?;
+            Some([r, g, b])
+        })();
+        match rgb {
+            Some([r, g, b]) => palette.push([r as f32, g as f32, b as f32]),
+            None => {
+                return Err(PixelSnapperError::InvalidInput(format!(
+                    "Invalid .gpl color line: '{}'",
+                    line
+                )))
+            }
+        }
+    }
+    Ok(palette)
+}
+
+/// Parse a JASC `.pal` palette: "JASC-PAL" magic, version, color count, then
+/// `R G B` rows.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_jasc_pal(content: &str) -> Result<Vec<[f32; 3]>> {
+    let mut lines = content.lines().map(str::trim).filter(|l| !l.is_empty());
+    if lines.next() != Some("JASC-PAL") {
+        return Err(PixelSnapperError::InvalidInput(
+            "Not a JASC palette: missing 'JASC-PAL' magic".to_string(),
+        ));
+    }
+    let _version = lines.next();
+    let _count = lines.next();
+
+    let mut palette = Vec::new();
+    for line in lines {
+        let mut parts = line.split_whitespace();
+        let rgb: Option<[u8; 3]> = (|| {
+            let r = parts.next()?.parse().ok()?;
+            let g = parts.next()?.parse().ok()?;
+            let b = parts.next()?.parse().ok()?;
+            Some([r, g, b])
+        })();
+        match rgb {
+            Some([r, g, b]) => palette.push([r as f32, g as f32, b as f32]),
+            None => {
+                return Err(PixelSnapperError::InvalidInput(format!(
+                    "Invalid .pal color line: '{}'",
+                    line
+                )))
+            }
+        }
+    }
+    Ok(palette)
+}
+
+/// Extract a palette from an image's opaque pixels. Returns the palette and
+/// the number of unique colors found; when that exceeds `max_colors` the
+/// palette is reduced deterministically via k-means (seed 42) instead of
+/// erroring, so photos also work as palette sources.
+fn palette_from_image_bytes(bytes: &[u8], max_colors: usize) -> Result<(Vec<[f32; 3]>, usize)> {
+    let img = image::load_from_memory(bytes)?.to_rgba8();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut unique: Vec<[f32; 3]> = Vec::new();
+    let mut opaque: Vec<[f32; 3]> = Vec::new();
+    for p in img.pixels() {
+        if p[3] == 0 {
+            continue;
+        }
+        let rgb = [p[0] as f32, p[1] as f32, p[2] as f32];
+        opaque.push(rgb);
+        if seen.insert([p[0], p[1], p[2]]) {
+            unique.push(rgb);
+        }
+    }
+
+    if unique.is_empty() {
+        return Err(PixelSnapperError::InvalidInput(
+            "Palette image has no opaque pixels".to_string(),
+        ));
+    }
+
+    let unique_count = unique.len();
+    if unique_count <= max_colors {
+        return Ok((unique, unique_count));
+    }
+    let reduced = kmeans_centroids(&opaque, max_colors, 42, 15)?;
+    Ok((reduced, unique_count))
+}
+
+/// Parse a palette file by extension: GIMP `.gpl`, JASC `.pal`, or Lospec
+/// `.hex` style (one hex color per line; blank lines and `;` comment lines are
+/// ignored) for everything else.
 #[cfg(not(target_arch = "wasm32"))]
 fn parse_palette_file(path: &Path) -> Result<Vec<[f32; 3]>> {
     let content = std::fs::read_to_string(path).map_err(|e| {
@@ -870,31 +998,66 @@ fn parse_palette_file(path: &Path) -> Result<Vec<[f32; 3]>> {
             e
         ))
     })?;
-    content
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with(';'))
-        .map(parse_hex_color)
-        .collect()
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("gpl") => parse_gpl(&content),
+        Some("pal") => parse_jasc_pal(&content),
+        _ => content
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with(';'))
+            .map(parse_hex_color)
+            .collect(),
+    }
 }
 
 /// Resolve a `--palette` argument into RGB centroids plus a human-readable
-/// source label. The value is read as a Lospec `.hex` file when it points at an
-/// existing file or carries a `.hex` extension; otherwise it is parsed as a
-/// comma-separated list of hex colors.
+/// source label. Image files (`.png`/`.jpg`/`.jpeg`) have their palette
+/// extracted; palette files (`.hex`/`.gpl`/`.pal`, or any existing file) are
+/// parsed by extension; anything else is a comma-separated list of hex colors.
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_palette(value: &str) -> Result<(Vec<[f32; 3]>, String)> {
     const MAX_PALETTE: usize = 256;
+    /// Palette-image sources with more unique colors than this get reduced
+    /// via k-means instead of erroring out.
+    const IMAGE_PALETTE_COLORS: usize = 64;
 
     let path = Path::new(value);
-    let is_hex_file = path.is_file()
-        || path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("hex"))
-            .unwrap_or(false);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
 
-    let palette = if is_hex_file {
+    if matches!(ext.as_deref(), Some("png" | "jpg" | "jpeg")) {
+        let bytes = std::fs::read(path).map_err(|e| {
+            PixelSnapperError::ProcessingError(format!(
+                "Failed to read palette image '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
+        let (palette, unique_count) = palette_from_image_bytes(&bytes, IMAGE_PALETTE_COLORS)?;
+        let source = if unique_count > palette.len() {
+            format!(
+                "{} ({} unique colors reduced to {} via k-means)",
+                value,
+                unique_count,
+                palette.len()
+            )
+        } else {
+            value.to_string()
+        };
+        return Ok((palette, source));
+    }
+
+    let is_palette_file =
+        path.is_file() || matches!(ext.as_deref(), Some("hex" | "gpl" | "pal"));
+
+    let palette = if is_palette_file {
         parse_palette_file(path)?
     } else {
         parse_palette_string(value)?
@@ -913,7 +1076,7 @@ fn resolve_palette(value: &str) -> Result<(Vec<[f32; 3]>, String)> {
         )));
     }
 
-    let source = if is_hex_file {
+    let source = if is_palette_file {
         value.to_string()
     } else {
         "inline".to_string()
@@ -1785,6 +1948,83 @@ mod tests {
         let palette = [[255.0, 255.0, 255.0], [0.0, 0.0, 0.0]];
         let out = map_to_palette(&img, &palette);
         assert_eq!(out.get_pixel(0, 0).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn parse_gpl_basic() {
+        let content = "GIMP Palette\nName: Test\nColumns: 4\n# a comment\n255 0 0 Red\n0 255 0\n  0 0 255  Blue Color\n";
+        let p = parse_gpl(content).unwrap();
+        assert_eq!(
+            p,
+            vec![[255.0, 0.0, 0.0], [0.0, 255.0, 0.0], [0.0, 0.0, 255.0]]
+        );
+    }
+
+    #[test]
+    fn parse_gpl_rejects_missing_header() {
+        assert!(parse_gpl("255 0 0\n").is_err());
+        assert!(parse_gpl("").is_err());
+    }
+
+    #[test]
+    fn parse_jasc_pal_basic() {
+        let content = "JASC-PAL\n0100\n2\n255 255 255\n0 0 0\n";
+        let p = parse_jasc_pal(content).unwrap();
+        assert_eq!(p, vec![[255.0, 255.0, 255.0], [0.0, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn parse_jasc_pal_rejects_bad_magic() {
+        assert!(parse_jasc_pal("RIFF-PAL\n0100\n1\n0 0 0\n").is_err());
+        assert!(parse_jasc_pal("").is_err());
+    }
+
+    fn png_bytes(img: &RgbaImage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn palette_from_image_unique_colors() {
+        let mut img = RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        img.put_pixel(1, 0, Rgba([0, 255, 0, 255]));
+        img.put_pixel(0, 1, Rgba([0, 0, 255, 255]));
+        img.put_pixel(1, 1, Rgba([255, 255, 255, 255]));
+
+        let (palette, unique) = palette_from_image_bytes(&png_bytes(&img), 64).unwrap();
+        assert_eq!(unique, 4);
+        assert_eq!(palette.len(), 4);
+        assert!(palette.contains(&[255.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn palette_from_image_reduces_when_over_limit() {
+        // 16x16 image with 256 unique colors, reduced to 8.
+        let mut img = RgbaImage::new(16, 16);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = Rgba([(x * 16 + y) as u8, x as u8 * 10, y as u8 * 10, 255]);
+        }
+        let (palette, unique) = palette_from_image_bytes(&png_bytes(&img), 8).unwrap();
+        assert_eq!(unique, 256);
+        assert_eq!(palette.len(), 8);
+    }
+
+    #[test]
+    fn kmeans_centroids_deterministic_for_seed() {
+        let pixels: Vec<[f32; 3]> = (0..200)
+            .map(|i| [(i % 256) as f32, ((i * 7) % 256) as f32, ((i * 13) % 256) as f32])
+            .collect();
+        let a = kmeans_centroids(&pixels, 5, 42, 15).unwrap();
+        let b = kmeans_centroids(&pixels, 5, 42, 15).unwrap();
+        let c = kmeans_centroids(&pixels, 5, 43, 15).unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 
     #[test]
