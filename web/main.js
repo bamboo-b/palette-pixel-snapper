@@ -6,6 +6,8 @@ let inputBytes = null;
 let ready = false;
 let palette = []; // { r, g, b, enabled }[] - colors parsed from the textarea
 let baseHex = null; // hex of the base color for relationship presets (keyed by value so it survives re-parses)
+let beforeUrl = null; // object URL backing #before (revoked before it is replaced)
+let outUrl = null; // object URL backing #after / #actual / #download (shared; revoked before replaced)
 
 const hexOf = (c) => [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
 
@@ -13,7 +15,10 @@ function loadImageFile(file) {
   if (!file) return;
   file.arrayBuffer().then((buf) => {
     inputBytes = new Uint8Array(buf);
-    $("before").src = URL.createObjectURL(file);
+    if (beforeUrl) URL.revokeObjectURL(beforeUrl);
+    beforeUrl = URL.createObjectURL(file);
+    $("before").src = beforeUrl;
+    if (outUrl) { URL.revokeObjectURL(outUrl); outUrl = null; }
     $("after").removeAttribute("src");
     $("actual").removeAttribute("src");
     $("actualSize").textContent = "";
@@ -248,20 +253,22 @@ function run() {
       }
       const paletteRgb = flat.length ? new Uint8Array(flat) : undefined;
       const seedRaw = $("seed").value.trim();
-      const seedVal = seedRaw === "" ? undefined : Number(seedRaw) >>> 0;
+      const seedNum = Number(seedRaw);
+      const seedVal = seedRaw === "" || !Number.isFinite(seedNum) ? undefined : seedNum >>> 0;
       const dither = $("dither").checked || undefined;
-      const out = process_image(inputBytes, k, undefined, paletteRgb ?? undefined, seedVal, dither);
+      const out = process_image(inputBytes, k, undefined, paletteRgb, seedVal, dither);
       const blob = new Blob([out], { type: "image/png" });
-      const url = URL.createObjectURL(blob);
-      $("after").src = url;
+      if (outUrl) URL.revokeObjectURL(outUrl);
+      outUrl = URL.createObjectURL(blob);
+      $("after").src = outUrl;
       const actual = $("actual");
       actual.onload = () => {
         $("actualSize").textContent = `${actual.naturalWidth} × ${actual.naturalHeight} px`;
       };
-      actual.src = url;
+      actual.src = outUrl;
       $("actualFig").hidden = false;
       const dl = $("download");
-      dl.href = url;
+      dl.href = outUrl;
       dl.hidden = false;
       setStatus("できあがり！下の「画像を保存（PNG）」から保存できるよ。");
     } catch (err) {
@@ -363,6 +370,18 @@ document.querySelector(".presets").addEventListener("click", (e) => {
 });
 
 $("run").addEventListener("click", run);
+
+// --- Left sidebar tabs: toggle aria-selected on the tab and `hidden` on its panel ---
+const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
+tabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    tabs.forEach((t) => {
+      const selected = t === tab;
+      t.setAttribute("aria-selected", selected ? "true" : "false");
+      $(t.getAttribute("aria-controls")).hidden = !selected;
+    });
+  });
+});
 
 init()
   .then(() => {

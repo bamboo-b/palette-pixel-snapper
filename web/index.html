@@ -3,11 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ドット絵 おなおしツール</title>
+    <title>ドット絵コンバーター</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎨%3C/text%3E%3C/svg%3E" />
     <style>
       body {
         font-family: system-ui, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-        max-width: 960px;
+        max-width: 1180px;
         margin: 2rem auto;
         padding: 0 1rem;
         color: #1a1a2e;
@@ -41,6 +42,44 @@
         font-size: 1.15rem;
       }
 
+      /* two-pane layout: left = settings sidebar, right = workspace */
+      .layout {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        gap: 1.5rem;
+        align-items: start;
+        margin-top: 1.2rem;
+      }
+      .sidebar {
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        background: #fafafa;
+        padding: 0.6rem 0.9rem 1rem;
+        position: sticky;
+        top: 1rem;
+      }
+      .sidebar-note { margin: 0.2rem 0 0.6rem; font-size: 0.85rem; color: #666; }
+      .tabs {
+        display: flex;
+        gap: 0.3rem;
+        border-bottom: 1px solid #e2e2e2;
+        margin: 0 -0.9rem 0.8rem;
+        padding: 0 0.9rem;
+      }
+      .tabs button {
+        border: none;
+        background: none;
+        padding: 0.5rem 0.6rem;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #777;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        cursor: pointer;
+      }
+      .tabs button[aria-selected="true"] { color: #1a6; border-bottom-color: #2a7; }
+      .tabpanel { margin: 0; }
+
       #drop {
         border: 2px dashed #888;
         border-radius: 8px;
@@ -50,7 +89,7 @@
       }
       #drop.dragover { border-color: #2a7; background: #f0fff8; }
 
-      .palette { margin: 1rem 0; }
+      .palette { margin: 0.4rem 0 0; }
       .palette > label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
       #paletteText {
         width: 100%;
@@ -78,10 +117,23 @@
       .swatches span.off { opacity: 0.25; filter: grayscale(1); }
       .swatches span.base { outline: 2px solid #2a7; outline-offset: 1px; }
       .row { display: flex; gap: 1rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
+      .field { margin: 0.9rem 0; }
+      .field > label { font-weight: 600; }
       button { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
       button:disabled { opacity: 0.5; cursor: default; }
       #run { background: #2a7; color: #fff; border-color: #2a7; font-weight: 600; font-size: 1.05rem; padding: 0.6rem 1.4rem; }
-      #download button { background: #f0fff8; border-color: #2a7; color: #1a6; font-weight: 600; }
+      /* download is an <a> styled as a button (an <a> may not wrap a <button>) */
+      #download {
+        display: inline-block;
+        padding: 0.45rem 0.9rem;
+        border-radius: 6px;
+        border: 1px solid #2a7;
+        background: #f0fff8;
+        color: #1a6;
+        font-weight: 600;
+        text-decoration: none;
+      }
+      #download[hidden] { display: none; }
       #status { min-height: 1.3em; color: #555; margin-top: 0.5rem; }
       .previews { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
       .previews figure { flex: 1 1 320px; margin: 0; }
@@ -99,6 +151,7 @@
       .actual-box {
         display: inline-block;
         max-width: 100%;
+        max-height: 60vh;
         overflow: auto;
         border: 1px solid #ddd;
         border-radius: 4px;
@@ -106,89 +159,110 @@
       }
       #actual { display: block; image-rendering: pixelated; }
 
-      /* advanced settings (collapsed) */
-      details.advanced {
-        margin-top: 1.5rem;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        padding: 0.4rem 0.9rem;
-        background: #fafafa;
-      }
-      details.advanced > summary {
-        cursor: pointer;
-        font-weight: 600;
-        padding: 0.4rem 0;
-        color: #333;
-      }
-      details.advanced[open] > summary { border-bottom: 1px solid #eee; margin-bottom: 0.5rem; }
       footer { margin-top: 2.5rem; color: #999; font-size: 0.85rem; border-top: 1px solid #eee; padding-top: 1rem; }
       footer a { color: #2a7; }
+
+      /* stack to a single column on narrow screens; workspace first */
+      @media (max-width: 760px) {
+        body { margin: 1rem auto; }
+        .layout { grid-template-columns: 1fr; gap: 1rem; }
+        .sidebar { position: static; order: 2; }
+        .workspace { order: 1; }
+      }
     </style>
   </head>
   <body>
-    <h1>ドット絵 おなおしツール</h1>
-    <p class="lead">AI画像やガタガタのドット絵を、キレイなドット絵に整えます。</p>
-    <p class="hint">ぜんぶブラウザの中で動くから、画像がどこかに送られる心配はありません。インストールも不要です。</p>
+    <header>
+      <h1>ドット絵コンバーター</h1>
+      <p class="lead">AI画像やガタガタのドット絵を、キレイなドット絵に整えます。</p>
+      <p class="hint">ぜんぶブラウザの中で動くから、画像がどこかに送られる心配はありません。インストールも不要です。</p>
 
-    <ol class="steps">
-      <li><b>①</b> 画像を下のワクに入れる</li>
-      <li><b>②</b>「ドット絵に整える」を押す</li>
-      <li><b>③</b> できあがりを保存する</li>
-    </ol>
+      <ol class="steps">
+        <li><b>①</b> 画像を右のワクに入れる</li>
+        <li><b>②</b>「ドット絵に整える」を押す</li>
+        <li><b>③</b> できあがりを保存する</li>
+      </ol>
+    </header>
 
-    <div id="drop">
-      画像をここにドラッグ&amp;ドロップ、または
-      <input type="file" id="file" accept="image/png,image/jpeg" />
-    </div>
+    <div class="layout">
+      <aside class="sidebar">
+        <p class="sidebar-note">⚙️ 設定（変えなくてもOK・そのままでキレイになります）</p>
 
-    <div class="row">
-      <button id="run" disabled>ドット絵に整える</button>
-      <a id="download" download="snapped.png" hidden><button type="button">画像を保存（PNG）</button></a>
-    </div>
-    <div id="status">よみこみ中...</div>
+        <div class="tabs" role="tablist" aria-label="設定">
+          <button type="button" role="tab" id="tabbtn-palette" aria-controls="tab-palette" aria-selected="true">パレット</button>
+          <button type="button" role="tab" id="tabbtn-effect" aria-controls="tab-effect" aria-selected="false">色数・効果</button>
+        </div>
 
-    <div class="previews">
-      <figure><figcaption>変換前（元の画像）</figcaption><img id="before" alt="元の画像" /></figure>
-      <figure><figcaption>変換後（できあがり）</figcaption><img id="after" alt="できあがり" /></figure>
-    </div>
+        <section id="tab-palette" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-palette">
+          <div class="palette">
+            <label for="paletteText">使う色を指定 <span class="hint">(任意 — hexを貼り付け、または .hex / .gpl / .pal / 画像を読み込み)</span></label>
+            <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   （1行1色でもOK）"></textarea>
+            <div class="row">
+              <input type="file" id="paletteFile" accept=".hex,.gpl,.pal,text/plain,image/png,image/jpeg" aria-label="パレットファイルを読み込む（.hex / .gpl / .pal / 画像）" />
+              <button type="button" id="exportHex">ONの色を .hex で保存</button>
+            </div>
+            <div class="presets">
+              <span class="pgroup"><b>色相</b><button type="button" data-preset="warm">暖色</button><button type="button" data-preset="cool">寒色</button></span>
+              <span class="pgroup"><b>明度</b><button type="button" data-preset="light">明るい</button><button type="button" data-preset="dark">暗い</button></span>
+              <span class="pgroup"><b>彩度</b><button type="button" data-preset="vivid">鮮やか</button><button type="button" data-preset="muted">くすみ</button></span>
+              <span class="pgroup"><b>関係性</b><button type="button" data-preset="complementary">補色</button><button type="button" data-preset="analogous">類似</button><button type="button" data-preset="triadic">三色</button></span>
+              <button type="button" data-preset="all">すべてON</button>
+            </div>
+            <div id="swatches" class="swatches"></div>
+            <div id="paletteCount" class="hint"></div>
+            <div class="hint">クリック: ON/OFF ・ Shift+クリック: 関係性プリセットの基準色を設定（緑枠）</div>
+          </div>
+        </section>
 
-    <figure class="actual" id="actualFig" hidden>
-      <figcaption>実寸（1:1）<span id="actualSize" class="hint"></span></figcaption>
-      <div class="actual-box"><img id="actual" alt="実寸の結果" /></div>
-    </figure>
+        <section id="tab-effect" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-effect" hidden>
+          <div class="field">
+            <label><input type="checkbox" id="limitColors" /> 色数を減らす</label>
+            <div class="row" style="margin: 0.4rem 0">
+              <input type="range" id="kSlider" min="2" max="64" value="16" disabled aria-label="色数" />
+              <output id="kValue">16</output>
+            </div>
+            <div class="hint">オフのままでも、画像から自動で16色を作って減色します。オンにすると 2〜64 色で指定できます。</div>
+          </div>
 
-    <details class="advanced">
-      <summary>🎨 詳しい設定（色を指定したい人向け・使わなくてもOK）</summary>
+          <div class="field">
+            <label for="seed" title="k-meansで色を選ぶときの乱数のタネ。同じseedなら同じ結果、変えると色の組み合わせが変わる（パレット直スナップ時は無効）">Seed</label>
+            <div class="row" style="margin: 0.4rem 0">
+              <input type="number" id="seed" min="0" step="1" placeholder="42" style="width: 6em" />
+              <button type="button" id="randomSeed" aria-label="ランダムなseedで引き直す" title="色選びガチャを引き直す（ランダムなseedで再実行）">🎲</button>
+            </div>
+            <div class="hint">空欄なら 42。色の組み合わせが気に入らなければ 🎲 で引き直せます。</div>
+          </div>
 
-      <div class="palette">
-        <label for="paletteText">使う色を指定 <span class="hint">(任意 — hexを貼り付け、または .hex / .gpl / .pal / 画像を読み込み)</span></label>
-        <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   （1行1色でもOK）"></textarea>
+          <div class="field">
+            <label><input type="checkbox" id="dither" /> ディザリング</label>
+            <div class="hint">少ない色数でもグラデーションを残しやすくする処理です。</div>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <div id="drop">
+          画像をここにドラッグ&amp;ドロップ、または
+          <input type="file" id="file" accept="image/png,image/jpeg" aria-label="画像ファイルを選ぶ" />
+        </div>
+
         <div class="row">
-          <input type="file" id="paletteFile" accept=".hex,.gpl,.pal,text/plain,image/png,image/jpeg" />
-          <button type="button" id="exportHex">ONの色を .hex で保存</button>
+          <button id="run" disabled>ドット絵に整える</button>
+          <a id="download" download="snapped.png" hidden>画像を保存（PNG）</a>
         </div>
-        <div class="presets">
-          <span class="pgroup"><b>色相</b><button type="button" data-preset="warm">暖色</button><button type="button" data-preset="cool">寒色</button></span>
-          <span class="pgroup"><b>明度</b><button type="button" data-preset="light">明るい</button><button type="button" data-preset="dark">暗い</button></span>
-          <span class="pgroup"><b>彩度</b><button type="button" data-preset="vivid">鮮やか</button><button type="button" data-preset="muted">くすみ</button></span>
-          <span class="pgroup"><b>関係性</b><button type="button" data-preset="complementary">補色</button><button type="button" data-preset="analogous">類似</button><button type="button" data-preset="triadic">三色</button></span>
-          <button type="button" data-preset="all">すべてON</button>
-        </div>
-        <div id="swatches" class="swatches"></div>
-        <div id="paletteCount" class="hint"></div>
-        <div class="hint">クリック: ON/OFF ・ Shift+クリック: 関係性プリセットの基準色を設定（緑枠）</div>
-      </div>
+        <div id="status">よみこみ中...</div>
 
-      <div class="row">
-        <label><input type="checkbox" id="limitColors" /> 色数を減らす</label>
-        <input type="range" id="kSlider" min="2" max="64" value="16" disabled />
-        <output id="kValue">16</output>
-        <span class="hint">(オフ = 16色)</span>
-        <label title="k-meansで色を選ぶときの乱数のタネ。同じseedなら同じ結果、変えると色の組み合わせが変わる（パレット直スナップ時は無効）">Seed <input type="number" id="seed" min="0" step="1" placeholder="42" style="width: 6em" /></label>
-        <button type="button" id="randomSeed" title="色選びガチャを引き直す（ランダムなseedで再実行）">🎲</button>
-        <label title="少ない色数でもグラデーションを残しやすくする処理"><input type="checkbox" id="dither" /> ディザリング</label>
-      </div>
-    </details>
+        <div class="previews">
+          <figure><figcaption>変換前（元の画像）</figcaption><img id="before" alt="元の画像" /></figure>
+          <figure><figcaption>変換後（できあがり）</figcaption><img id="after" alt="できあがり" /></figure>
+        </div>
+
+        <figure class="actual" id="actualFig" hidden>
+          <figcaption>実寸（1:1）<span id="actualSize" class="hint"></span></figcaption>
+          <div class="actual-box"><img id="actual" alt="実寸の結果" /></div>
+        </figure>
+      </main>
+    </div>
 
     <footer>
       <a href="https://github.com/bamboo-b/palette-pixel-snapper" target="_blank" rel="noopener">ソースコード・詳しい使い方（GitHub）</a>
