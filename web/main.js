@@ -1,11 +1,13 @@
-import init, { process_image } from "./pkg/spritefusion_pixel_snapper.js";
+import init, { process_image, extract_palette } from "./pkg/spritefusion_pixel_snapper.js";
 
 const $ = (id) => document.getElementById(id);
 
 let inputBytes = null;
 let ready = false;
 let palette = []; // { r, g, b, enabled }[] - colors parsed from the textarea
-let baseIndex = -1; // index of the base color highlighted by a relationship preset
+let baseHex = null; // hex of the base color for relationship presets (keyed by value so it survives re-parses)
+
+const hexOf = (c) => [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
 
 function loadImageFile(file) {
   if (!file) return;
@@ -51,24 +53,33 @@ function parsePalette(text) {
 }
 
 // --- Color helpers for the "concept" presets ---
-// Returns [hue(0-360), saturation(0-1), lightness(0-1)].
-// Saturation is the HSV/HSB definition (chroma / value): unlike HSL saturation
-// it does NOT blow up for near-white/near-black tints, so "vivid" and the
-// neutral test stay intuitive (e.g. an off-white reads as neutral, not vivid).
-// Lightness is the HSL definition, which is what "light/dark" should track.
+// All trait judgments run in OKLCh (the polar form of OKLab), mirroring the
+// Rust core's palette matching: OKLab lightness/chroma/hue track perception
+// far better than HSL/HSV (whose hue is bunched up around yellow and whose
+// lightness ignores that yellow reads brighter than blue).
+function srgbToOklab(r, g, b) {
+  const lin = (c) => {
+    c /= 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const [lr, lg, lb] = [lin(r), lin(g), lin(b)];
+  const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  return [
+    0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+  ];
+}
+
+// Returns [hue(0-360, OKLCh), chroma(~0-0.33), lightness(0-1, OKLab L)].
 function rgbTraits(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b), c = max - min;
-  const l = (max + min) / 2;
-  const s = max === 0 ? 0 : c / max;
-  let h = 0;
-  if (c !== 0) {
-    if (max === r) h = (g - b) / c + (g < b ? 6 : 0);
-    else if (max === g) h = (b - r) / c + 2;
-    else h = (r - g) / c + 4;
-    h *= 60;
-  }
-  return [h, s, l];
+  const [L, a, bb] = srgbToOklab(r, g, b);
+  const c = Math.hypot(a, bb);
+  let h = (Math.atan2(bb, a) * 180) / Math.PI;
+  if (h < 0) h += 360;
+  return [h, c, L];
 }
 
 // Circular distance between two hues, in degrees (0-180).
@@ -78,7 +89,8 @@ function hueDist(a, b) {
 }
 
 // Near-grayscale colors are hue-agnostic; keep them on for hue/relationship presets.
-const isNeutral = (s) => s < 0.15;
+// Threshold is OKLab chroma (saturated primaries reach ~0.25-0.33).
+const isNeutral = (c) => c < 0.04;
 
 function median(arr) {
   if (!arr.length) return 0;
@@ -88,18 +100,24 @@ function median(arr) {
 }
 
 // Rebuild the swatch row from `palette`, reflecting enabled/base state, and
-// update the "使う色: N / M" count. Clicking a swatch toggles that color.
+// update the "使う色: N / M" count. Clicking a swatch toggles that color;
+// Shift+click sets/unsets it as the base for relationship presets.
 function renderPalette() {
   const swatches = $("swatches");
   swatches.innerHTML = "";
-  palette.forEach((c, i) => {
+  palette.forEach((c) => {
     const span = document.createElement("span");
     span.style.background = `rgb(${c.r}, ${c.g}, ${c.b})`;
-    const hex = [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
-    span.title = `#${hex}`;
+    const hex = hexOf(c);
+    span.title = `#${hex}（クリック: ON/OFF、Shift+クリック: 基準色）`;
     if (!c.enabled) span.classList.add("off");
-    if (i === baseIndex) span.classList.add("base");
-    span.addEventListener("click", () => {
+    if (hex === baseHex) span.classList.add("base");
+    span.addEventListener("click", (e) => {
+      if (e.shiftKey) {
+        baseHex = baseHex === hex ? null : hex;
+        renderPalette();
+        return;
+      }
       c.enabled = !c.enabled;
       renderPalette();
     });
@@ -107,16 +125,32 @@ function renderPalette() {
   });
   const on = palette.filter((c) => c.enabled).length;
   $("paletteCount").textContent = palette.length ? `使う色: ${on} / ${palette.length}` : "";
+  updateSeedEnabled();
 }
 
-// Re-parse the textarea into `palette` (all colors enabled) and re-render.
+// The seed only matters while k-means runs: with "Limit colors" on, or with no
+// active palette (the pure nearest-snap path is deterministic). Gray it out
+// otherwise so it doesn't look like a knob that does something.
+function updateSeedEnabled() {
+  const kmeansRuns = $("limitColors").checked || !palette.some((c) => c.enabled);
+  $("seed").disabled = !kmeansRuns;
+  $("randomSeed").disabled = !kmeansRuns;
+}
+
+// Re-parse the textarea into `palette` and re-render. ON/OFF state is keyed by
+// hex value so editing the textarea keeps the curation of colors that survive;
+// only genuinely new colors default to enabled.
 function refreshPalette() {
+  const prev = new Map(palette.map((c) => [hexOf(c), c.enabled]));
   const rgb = parsePalette($("paletteText").value);
   palette = [];
   for (let i = 0; i < rgb.length; i += 3) {
-    palette.push({ r: rgb[i], g: rgb[i + 1], b: rgb[i + 2], enabled: true });
+    const c = { r: rgb[i], g: rgb[i + 1], b: rgb[i + 2], enabled: true };
+    const known = prev.get(hexOf(c));
+    if (known !== undefined) c.enabled = known;
+    palette.push(c);
   }
-  baseIndex = -1;
+  if (baseHex && !palette.some((c) => hexOf(c) === baseHex)) baseHex = null;
   renderPalette();
 }
 
@@ -126,36 +160,56 @@ function applyPreset(name) {
   if (!palette.length) return;
   if (name === "all") {
     palette.forEach((c) => (c.enabled = true));
-    baseIndex = -1;
     renderPalette();
     setStatus("すべての色をONにしたよ。");
     return;
   }
 
   const traits = palette.map((c) => rgbTraits(c.r, c.g, c.b));
-  baseIndex = -1;
   let pred;
 
-  if (name === "warm") pred = (h, s) => isNeutral(s) || h <= 90 || h >= 300;
-  else if (name === "cool") pred = (h, s) => isNeutral(s) || (h > 90 && h < 300);
-  else if (name === "light" || name === "dark") {
+  if (name === "warm" || name === "cool") {
+    // OKLCh hue anchors: red≈29°, yellow≈110°, green≈142°, blue≈264°, magenta≈328°.
+    // Fixed split: warm = red→yellow plus magenta/pink, cool = the rest.
+    const idxs = [];
+    traits.forEach(([, c], i) => {
+      if (!isNeutral(c)) idxs.push(i);
+    });
+    const isWarmFixed = (h) => h <= 120 || h >= 320;
+    let warm = new Set(idxs.filter((i) => isWarmFixed(traits[i][0])));
+    // Relative fallback: when the fixed boundary doesn't separate anything
+    // (an all-warm or all-cool palette), split at the median "warmth"
+    // (circular hue distance to orange-red) so the preset still halves the
+    // palette into its warmer and cooler sides.
+    if (idxs.length >= 2 && (warm.size === 0 || warm.size === idxs.length)) {
+      const warmth = new Map(idxs.map((i) => [i, -hueDist(traits[i][0], 40)]));
+      const med = median([...warmth.values()]);
+      warm = new Set(idxs.filter((i) => warmth.get(i) >= med));
+    }
+    pred = (h, c, l, i) => isNeutral(c) || (name === "warm" ? warm.has(i) : !warm.has(i));
+  } else if (name === "light" || name === "dark") {
     const med = median(traits.map((x) => x[2]));
     pred = name === "light" ? (h, s, l) => l >= med : (h, s, l) => l < med;
   } else if (name === "vivid" || name === "muted") {
     const med = median(traits.map((x) => x[1]));
     pred = name === "vivid" ? (h, s) => s >= med : (h, s) => s < med;
   } else if (name === "complementary" || name === "analogous" || name === "triadic") {
-    let bi = -1, bs = -1;
-    traits.forEach(([h, s], i) => {
-      if (!isNeutral(s) && s > bs) { bs = s; bi = i; }
-    });
+    // A Shift+clicked base color wins; otherwise fall back to the most
+    // saturated non-neutral color.
+    let bi = baseHex ? palette.findIndex((c, i) => hexOf(c) === baseHex && !isNeutral(traits[i][1])) : -1;
+    if (bi < 0) {
+      let bs = -1;
+      traits.forEach(([h, s], i) => {
+        if (!isNeutral(s) && s > bs) { bs = s; bi = i; }
+      });
+    }
     if (bi < 0) {
       palette.forEach((c) => (c.enabled = true));
       renderPalette();
       setStatus("基準にできる鮮やかな色がない（全色ニュートラル）ので全色ONのままだよ。");
       return;
     }
-    baseIndex = bi;
+    baseHex = hexOf(palette[bi]);
     const H = traits[bi][0];
     if (name === "complementary") pred = (h, s) => isNeutral(s) || hueDist(h, H) <= 35 || hueDist(h, H + 180) <= 35;
     else if (name === "analogous") pred = (h, s) => isNeutral(s) || hueDist(h, H) <= 45;
@@ -166,12 +220,11 @@ function applyPreset(name) {
 
   let on = 0;
   palette.forEach((c, i) => {
-    c.enabled = pred(traits[i][0], traits[i][1], traits[i][2]);
+    c.enabled = pred(traits[i][0], traits[i][1], traits[i][2], i);
     if (c.enabled) on++;
   });
   if (on === 0) {
     palette.forEach((c) => (c.enabled = true));
-    baseIndex = -1;
     renderPalette();
     setStatus("このパレットには該当する色がなかったので全色ONに戻したよ。");
     return;
@@ -194,7 +247,10 @@ function run() {
         return; // finally re-enables the button
       }
       const paletteRgb = flat.length ? new Uint8Array(flat) : undefined;
-      const out = process_image(inputBytes, k, undefined, paletteRgb ?? undefined);
+      const seedRaw = $("seed").value.trim();
+      const seedVal = seedRaw === "" ? undefined : Number(seedRaw) >>> 0;
+      const dither = $("dither").checked || undefined;
+      const out = process_image(inputBytes, k, undefined, paletteRgb ?? undefined, seedVal, dither);
       const blob = new Blob([out], { type: "image/png" });
       const url = URL.createObjectURL(blob);
       $("after").src = url;
@@ -235,17 +291,70 @@ drop.addEventListener("drop", (e) => loadImageFile(e.dataTransfer.files[0]));
 
 $("limitColors").addEventListener("change", (e) => {
   $("kSlider").disabled = !e.target.checked;
+  updateSeedEnabled();
 });
 $("kSlider").addEventListener("input", (e) => ($("kValue").textContent = e.target.value));
 
 $("paletteText").addEventListener("input", refreshPalette);
-$("paletteFile").addEventListener("change", (e) => {
+
+// Convert GIMP .gpl / JASC .pal text to plain hex lines so the textarea stays
+// the single source of truth and parsePalette stays hex-only.
+function paletteTextFromGplOrPal(text, name) {
+  let rows = text.split(/\r?\n/).map((l) => l.trim());
+  if (/\.pal$/.test(name)) rows = rows.filter((l) => l).slice(3); // JASC-PAL / version / count
+  const out = [];
+  for (const line of rows) {
+    const m = line.match(/^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})/);
+    if (!m) continue;
+    out.push([+m[1], +m[2], +m[3]].map((v) => Math.min(255, v).toString(16).padStart(2, "0")).join(""));
+  }
+  return out.join("\n");
+}
+
+$("paletteFile").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  file.text().then((txt) => {
-    $("paletteText").value = txt;
+  const name = file.name.toLowerCase();
+  try {
+    if (file.type.startsWith("image/") || /\.(png|jpe?g)$/.test(name)) {
+      // Extract a palette from the image via WASM (unique colors, k-means
+      // reduced when there are more than 64).
+      const flat = extract_palette(new Uint8Array(await file.arrayBuffer()), 64);
+      const lines = [];
+      for (let i = 0; i < flat.length; i += 3) {
+        lines.push(hexOf({ r: flat[i], g: flat[i + 1], b: flat[i + 2] }));
+      }
+      $("paletteText").value = lines.join("\n");
+      setStatus(`画像から ${lines.length} 色を抽出したよ。`);
+    } else {
+      let txt = await file.text();
+      if (/\.(gpl|pal)$/.test(name)) txt = paletteTextFromGplOrPal(txt, name);
+      $("paletteText").value = txt;
+    }
     refreshPalette();
-  });
+  } catch (err) {
+    setStatus("パレット読み込みエラー: " + err);
+  }
+});
+
+$("exportHex").addEventListener("click", () => {
+  const lines = palette.filter((c) => c.enabled).map(hexOf);
+  if (!lines.length) {
+    setStatus("ONの色がないから書き出せないんだけど？");
+    return;
+  }
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "palette.hex";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus(`ONの ${lines.length} 色を palette.hex に書き出したよ。`);
+});
+
+$("randomSeed").addEventListener("click", () => {
+  $("seed").value = Math.floor(Math.random() * 0x100000000);
+  if (ready && inputBytes) run();
 });
 
 document.querySelector(".presets").addEventListener("click", (e) => {

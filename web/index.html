@@ -88,10 +88,11 @@
     </div>
 
     <div class="palette">
-      <label for="paletteText">Palette <span class="hint">(optional - paste hex, or load a .hex file)</span></label>
+      <label for="paletteText">Palette <span class="hint">(optional - paste hex, or load a .hex / .gpl / .pal file or an image)</span></label>
       <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   (or one hex per line)"></textarea>
       <div class="row">
-        <input type="file" id="paletteFile" accept=".hex,text/plain" />
+        <input type="file" id="paletteFile" accept=".hex,.gpl,.pal,text/plain,image/png,image/jpeg" />
+        <button type="button" id="exportHex">ONの色を .hex で保存</button>
       </div>
       <div class="presets">
         <span class="pgroup"><b>色相</b><button type="button" data-preset="warm">暖色</button><button type="button" data-preset="cool">寒色</button></span>
@@ -102,6 +103,7 @@
       </div>
       <div id="swatches" class="swatches"></div>
       <div id="paletteCount" class="hint"></div>
+      <div class="hint">クリック: ON/OFF ・ Shift+クリック: 関係性プリセットの基準色を設定（緑枠）</div>
     </div>
 
     <div class="row">
@@ -109,6 +111,9 @@
       <input type="range" id="kSlider" min="2" max="64" value="16" disabled />
       <output id="kValue">16</output>
       <span class="hint">(off = 16 colors)</span>
+      <label title="k-meansで色を選ぶときの乱数のタネ。同じseedなら同じ結果、変えると色の組み合わせが変わる（パレット直スナップ時は無効）">Seed <input type="number" id="seed" min="0" step="1" placeholder="42" style="width: 6em" /></label>
+      <button type="button" id="randomSeed" title="色選びガチャを引き直す（ランダムなseedで再実行）">🎲</button>
+      <label><input type="checkbox" id="dither" /> Dither</label>
     </div>
 
     <div class="row">
