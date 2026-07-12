@@ -47,8 +47,8 @@ Requires [Rust](https://www.rust-lang.org/) installed on your machine.
 ### 💻 CLI
 
 ```bash
-git clone https://github.com/bamboo-b/spritefusion-pixel-snapper.git
-cd spritefusion-pixel-snapper
+git clone https://github.com/bamboo-b/palette-pixel-snapper.git
+cd palette-pixel-snapper
 ```
 
 ```bash
@@ -129,8 +129,8 @@ Notes:
 ### 🌐 Web (WASM)
 
 ```bash
-git clone https://github.com/bamboo-b/spritefusion-pixel-snapper.git
-cd spritefusion-pixel-snapper
+git clone https://github.com/bamboo-b/palette-pixel-snapper.git
+cd palette-pixel-snapper
 ```
 
 Build the WASM module into the web app folder:
