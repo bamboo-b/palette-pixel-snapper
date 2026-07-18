@@ -438,7 +438,9 @@ tabs.forEach((tab) => {
 const themeToggle = $("themeToggle");
 function syncThemeIcon() {
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
-  themeToggle.textContent = dark ? "☀️" : "🌙";
+  // Icon reflects the CURRENT theme (dark = moon, light = sun); the aria-label
+  // still describes the ACTION the click performs.
+  themeToggle.textContent = dark ? "🌙" : "☀️";
   themeToggle.setAttribute("aria-label", dark ? "ライトモードに切り替え" : "ダークモードに切り替え");
 }
 themeToggle.addEventListener("click", () => {

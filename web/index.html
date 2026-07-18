@@ -133,18 +133,20 @@
       :root[data-theme="dark"] .pill-btn[aria-expanded="true"] { color: var(--accent); }
       .theme-toggle {
         flex: none;
+        margin-left: auto; /* push the theme toggle to the far right of the toolbar */
         width: 40px;
         height: 40px;
-        border: 2px solid var(--border-strong);
-        background: var(--btn-face);
-        font-size: 1.1rem;
+        border: none;
+        background: none;
+        box-shadow: none;
+        font-size: 1.3rem;
         line-height: 1;
         cursor: pointer;
-        box-shadow: 3px 3px 0 var(--px-shadow);
-        transition: background 0.1s, transform 0.05s, box-shadow 0.05s;
+        transition: transform 0.05s, opacity 0.1s;
       }
-      .theme-toggle:hover { background: var(--surface-2); }
-      .theme-toggle:active { transform: translate(3px, 3px); box-shadow: none; }
+      /* :not(:disabled) keeps these ahead of the generic button:hover/:active rules */
+      .theme-toggle:hover:not(:disabled) { background: none; opacity: 0.6; }
+      .theme-toggle:active:not(:disabled) { transform: translate(0, 1px); box-shadow: none; }
 
       /* ---- Two-pane layout; the settings pane collapses away on toggle ---- */
       .layout {
@@ -452,7 +454,7 @@
 
     <div class="toolbar">
       <button id="openSettings" class="pill-btn" type="button" aria-expanded="true" aria-controls="settingsPanel">⚙️ 設定</button>
-      <button id="themeToggle" class="theme-toggle" type="button" aria-label="テーマを切り替え">🌙</button>
+      <button id="themeToggle" class="theme-toggle" type="button" aria-label="テーマを切り替え">☀️</button>
     </div>
 
     <div class="layout">
