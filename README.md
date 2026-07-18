@@ -144,7 +144,7 @@ cargo run input.png output.png --palette retro.gpl
 cargo run input.png output.png --palette some_reference_art.png
 ```
 
-**ディザリング**：`--dither` でFloyd–Steinbergディザを適用（グリッド確定後、出力解像度で適用）。少ない色数でもグラデーションを残しやすくなります。
+**ディザリング**：`--dither` で組織的ディザ（Bayer 4×4）を適用（グリッド確定後、出力解像度で適用）。グラデーションを市松模様の陰影として残します。誤差拡散ではないので、ベタ塗り部分に斑点ノイズが混ざりません。
 
 ```bash
 cargo run input.png output.png --palette pico8.hex --dither
@@ -174,7 +174,7 @@ const outputBytes = process_image(inputBytes, 16);
 - 使わない省略可能引数には `undefined`（または `null`）を渡します。
 - `paletteRgb`：RGB三つ組をフラットに並べた `Uint8Array`（`[r,g,b, r,g,b, ...]`、最大256色）。渡すとそのパレットにスナップ。`kColors` を併用すると「k-meansでN色に減らしてからパレットにスナップ」に切り替わります。
 - `seed`（`u32`、省略可）：k-means初期化のシード。色数が絡む場合、同じ画像/パレットでも別の色の組み合わせになります。純粋な最近傍スナップには影響しません。デフォルト `42`。
-- `dither`（`boolean`、省略可）：出力解像度でFloyd–Steinbergディザを適用。デフォルト `false`。
+- `dither`（`boolean`、省略可）：出力解像度で組織的ディザ（Bayer 4×4）を適用。デフォルト `false`。
 - `extract_palette(inputBytes, maxColors?)`：画像からパレットを抽出（不透明な一意色を、`maxColors` 超なら決定論的にk-means縮小。デフォルト64・最大256）。`process_image` の `paletteRgb` にそのまま渡せる `Uint8Array` を返します。
 
 ## パラメータ早見表（CLI）
@@ -187,7 +187,7 @@ const outputBytes = process_image(inputBytes, 16);
 | `--pixel-size <n>` | グリッド間隔を手動指定 | `--pixel-size 8` |
 | `--palette <値>` | 固定パレット（インラインhex / `.hex` / `.gpl` / `.pal` / 画像） | `--palette pico8.hex` |
 | `--seed <n>` | k-meansのシード | `--seed 7` |
-| `--dither` | Floyd–Steinbergディザ適用 | `--dither` |
+| `--dither` | 組織的ディザ（Bayer）適用 | `--dither` |
 
 </details>
 

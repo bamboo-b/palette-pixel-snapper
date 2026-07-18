@@ -47,7 +47,7 @@ pub struct Config {
     /// Whether the user explicitly passed a color count. With a palette, this
     /// switches from direct snapping to "k-means then snap centroids".
     k_colors_explicit: bool,
-    /// Floyd–Steinberg dither the output against the effective palette.
+    /// Ordered (Bayer 4×4) dither the output against the effective palette.
     /// Applied at output resolution, after the grid is resolved.
     dither: bool,
 }
@@ -257,11 +257,11 @@ fn process_image_common(input_bytes: &[u8], config: Option<Config>) -> Result<Pr
     // Dithering is applied at output resolution, after the grid is resolved:
     // dithering the full-size image first would be voted away by `resample`'s
     // per-cell majority and would pollute the edge profiles used for grid
-    // detection. Cells are averaged from the original image so the dither has
-    // real gradients to diffuse.
+    // detection. Cells come from the original image via `resample_for_dither`
+    // so gradient cells keep their in-between colors for the dither to render.
     let output_img = match &palette_used {
         Some(p) if config.dither => {
-            dither_to_palette(&resample_average(&rgba_img, &col_cuts, &row_cuts)?, p)
+            dither_to_palette(&resample_for_dither(&rgba_img, &col_cuts, &row_cuts)?, p)
         }
         _ => resample(&quantized_img, &col_cuts, &row_cuts)?,
     };
@@ -1738,10 +1738,12 @@ fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage
     Ok(final_img)
 }
 
-/// Like `resample`, but averages each cell's opaque pixels instead of taking
-/// the majority color. Cells with no opaque pixels stay fully transparent.
-/// Used as the dither input so gradients survive into the output grid.
-fn resample_average(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage> {
+/// Dither input variant of `resample`: a cell keeps its strict-majority color
+/// when one exact color covers more than half of its opaque pixels (crisp
+/// outlines and flat fills, matching the non-dither look), and falls back to
+/// the opaque average otherwise (gradient cells keep their in-between color
+/// for the dither to render). Cells with no opaque pixels stay transparent.
+fn resample_for_dither(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage> {
     if cols.len() < 2 || rows.len() < 2 {
         return Err(PixelSnapperError::ProcessingError(
             "Insufficient grid cuts for resampling".to_string(),
@@ -1761,6 +1763,7 @@ fn resample_average(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<R
 
             let mut sum = [0.0f64; 4];
             let mut count = 0usize;
+            let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
             for y in ys..ye {
                 for x in xs..xe {
                     if x < img.width() as usize && y < img.height() as usize {
@@ -1772,13 +1775,21 @@ fn resample_average(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<R
                             sum[ch] += p[ch] as f64;
                         }
                         count += 1;
+                        *counts.entry(p).or_insert(0) += 1;
                     }
                 }
             }
 
             let pixel = if count > 0 {
-                let avg = |ch: usize| (sum[ch] / count as f64).round() as u8;
-                [avg(0), avg(1), avg(2), avg(3)]
+                let mut candidates: Vec<([u8; 4], usize)> = counts.into_iter().collect();
+                candidates.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                let winner = candidates[0];
+                if winner.1 * 2 > count {
+                    winner.0
+                } else {
+                    let avg = |ch: usize| (sum[ch] / count as f64).round() as u8;
+                    [avg(0), avg(1), avg(2), avg(3)]
+                }
             } else {
                 [0, 0, 0, 0]
             };
@@ -1788,19 +1799,28 @@ fn resample_average(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<R
     Ok(final_img)
 }
 
-/// Floyd–Steinberg dither against `palette`: error accumulated in f32 sRGB,
-/// nearest color chosen in OKLab. Transparent pixels neither receive nor emit
-/// diffused error.
+/// 4×4 Bayer threshold matrix for the ordered dither (values 0–15).
+const BAYER4: [[u8; 4]; 4] = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5],
+];
+
+/// Ordered (Bayer 4×4) dither against `palette`. Per pixel: take the OKLab
+/// nearest palette color, mirror the pixel across it to find the bracketing
+/// palette color on the far side, and let the position-based Bayer threshold
+/// pick between the two. Pattern density comes from the sRGB projection onto
+/// the pair's axis, so off-axis second colors project short and stay rare —
+/// and pixels near a palette color come out flat. Unlike error diffusion no
+/// error travels between pixels: flat regions stay flat and a bad match
+/// cannot avalanche into confetti speckle at sprite scale.
 fn dither_to_palette(img: &RgbaImage, palette: &[[f32; 3]]) -> RgbaImage {
     if palette.is_empty() {
         return img.clone();
     }
     let palette_lab: Vec<[f32; 3]> = palette.iter().map(srgb_to_oklab).collect();
     let (w, h) = img.dimensions();
-    let mut work: Vec<[f32; 3]> = img
-        .pixels()
-        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
-        .collect();
     let mut out = RgbaImage::new(w, h);
 
     for y in 0..h {
@@ -1810,43 +1830,44 @@ fn dither_to_palette(img: &RgbaImage, palette: &[[f32; 3]]) -> RgbaImage {
                 out.put_pixel(x, y, *src);
                 continue;
             }
-            let idx = (y * w + x) as usize;
-            let old = [
-                work[idx][0].clamp(0.0, 255.0),
-                work[idx][1].clamp(0.0, 255.0),
-                work[idx][2].clamp(0.0, 255.0),
+            let c = [src[0] as f32, src[1] as f32, src[2] as f32];
+            let i1 = nearest_in_oklab(&srgb_to_oklab(&c), &palette_lab);
+            let c1 = palette[i1];
+            let mirrored = [
+                (2.0 * c[0] - c1[0]).clamp(0.0, 255.0),
+                (2.0 * c[1] - c1[1]).clamp(0.0, 255.0),
+                (2.0 * c[2] - c1[2]).clamp(0.0, 255.0),
             ];
-            let chosen = palette[nearest_in_oklab(&srgb_to_oklab(&old), &palette_lab)];
+            let i2 = nearest_in_oklab(&srgb_to_oklab(&mirrored), &palette_lab);
+
+            let mut chosen = i1;
+            if i2 != i1 {
+                let c2 = palette[i2];
+                let d = [c2[0] - c1[0], c2[1] - c1[1], c2[2] - c1[2]];
+                let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                if len2 > 0.0 {
+                    let t = ((c[0] - c1[0]) * d[0]
+                        + (c[1] - c1[1]) * d[1]
+                        + (c[2] - c1[2]) * d[2])
+                        / len2;
+                    let threshold =
+                        (BAYER4[(y % 4) as usize][(x % 4) as usize] as f32 + 0.5) / 16.0;
+                    if t.clamp(0.0, 1.0) > threshold {
+                        chosen = i2;
+                    }
+                }
+            }
+            let p = palette[chosen];
             out.put_pixel(
                 x,
                 y,
                 Rgba([
-                    chosen[0].round() as u8,
-                    chosen[1].round() as u8,
-                    chosen[2].round() as u8,
+                    p[0].round() as u8,
+                    p[1].round() as u8,
+                    p[2].round() as u8,
                     src[3],
                 ]),
             );
-
-            let err = [old[0] - chosen[0], old[1] - chosen[1], old[2] - chosen[2]];
-            let mut diffuse = |dx: i64, dy: i64, weight: f32| {
-                let nx = x as i64 + dx;
-                let ny = y as i64 + dy;
-                if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
-                    return;
-                }
-                if img.get_pixel(nx as u32, ny as u32)[3] == 0 {
-                    return;
-                }
-                let n_idx = (ny as u64 * w as u64 + nx as u64) as usize;
-                for ch in 0..3 {
-                    work[n_idx][ch] += err[ch] * weight;
-                }
-            };
-            diffuse(1, 0, 7.0 / 16.0);
-            diffuse(-1, 1, 3.0 / 16.0);
-            diffuse(0, 1, 5.0 / 16.0);
-            diffuse(1, 1, 1.0 / 16.0);
         }
     }
     out
@@ -2065,9 +2086,10 @@ mod tests {
     }
 
     #[test]
-    fn resample_average_handles_transparency() {
+    fn resample_for_dither_handles_transparency() {
         // 4x2 image, 2x1 cells: left cell has 2 opaque + 2 transparent pixels
-        // (average of opaque only), right cell is fully transparent.
+        // — a 50/50 color split is NOT a strict majority, so the cell averages
+        // the opaque pixels. Right cell is fully transparent.
         let mut img = RgbaImage::new(4, 2);
         img.put_pixel(0, 0, Rgba([100, 0, 0, 255]));
         img.put_pixel(1, 0, Rgba([200, 0, 0, 255]));
@@ -2075,10 +2097,53 @@ mod tests {
         img.put_pixel(1, 1, Rgba([9, 9, 9, 0]));
         // pixels (2..4, 0..2) stay default transparent black
 
-        let out = resample_average(&img, &[0, 2, 4], &[0, 2]).unwrap();
+        let out = resample_for_dither(&img, &[0, 2, 4], &[0, 2]).unwrap();
         assert_eq!(out.dimensions(), (2, 1));
         assert_eq!(out.get_pixel(0, 0).0, [150, 0, 0, 255]);
         assert_eq!(out.get_pixel(1, 0).0[3], 0);
+    }
+
+    #[test]
+    fn resample_for_dither_keeps_strict_majority_color() {
+        // 2x2 single cell: 3 of 4 pixels share one exact color — the cell must
+        // snap to it (crisp outline) instead of averaging in the odd pixel.
+        let mut img = RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, Rgba([10, 20, 30, 255]));
+        img.put_pixel(1, 0, Rgba([10, 20, 30, 255]));
+        img.put_pixel(0, 1, Rgba([10, 20, 30, 255]));
+        img.put_pixel(1, 1, Rgba([200, 200, 200, 255]));
+
+        let out = resample_for_dither(&img, &[0, 2], &[0, 2]).unwrap();
+        assert_eq!(out.get_pixel(0, 0).0, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn dither_keeps_flat_regions_flat() {
+        // Ordered dithering must not perturb a region that sits on (or near) a
+        // palette color — the old error diffusion sprinkled speckles here.
+        let palette = [[0.0, 0.0, 0.0], [255.0, 255.0, 255.0]];
+        for v in [0u8, 20, 245, 255] {
+            let img = RgbaImage::from_pixel(8, 8, Rgba([v, v, v, 255]));
+            let out = dither_to_palette(&img, &palette);
+            let first = out.get_pixel(0, 0).0;
+            assert!(
+                out.pixels().all(|p| p.0 == first),
+                "flat {} input must stay a single color",
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn dither_mid_gray_makes_even_checker() {
+        // sRGB 128 gray between black and white projects to t ≈ 0.502, which
+        // must flip exactly half of the 4×4 Bayer cells: a 50% checker, the
+        // classic pixel-art rendition of mid-gray.
+        let palette = [[0.0, 0.0, 0.0], [255.0, 255.0, 255.0]];
+        let img = RgbaImage::from_pixel(8, 8, Rgba([128, 128, 128, 255]));
+        let out = dither_to_palette(&img, &palette);
+        let whites = out.pixels().filter(|p| p[0] == 255).count();
+        assert_eq!(whites, 32, "expected a 50/50 pattern on 8x8");
     }
 
     #[test]
