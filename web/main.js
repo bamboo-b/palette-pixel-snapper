@@ -433,7 +433,7 @@ tabs.forEach((tab) => {
   });
 });
 
-// --- Theme toggle: an inline <head> script already set data-theme (OS default or
+// --- Theme toggle: an inline <head> script already set data-theme (light default or
 // the saved choice); here we just flip it on click and remember the new choice. ---
 const themeToggle = $("themeToggle");
 function syncThemeIcon() {

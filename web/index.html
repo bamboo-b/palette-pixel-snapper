@@ -9,18 +9,16 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet" />
-    <!-- Decide the theme before first paint (avoids a flash): saved choice wins, else follow the OS. -->
+    <!-- Decide the theme before first paint (avoids a flash): saved choice wins, else light. -->
     <script>
       (function () {
+        var t = "light";
         try {
-          var t = localStorage.getItem("theme");
-          if (t !== "light" && t !== "dark") {
-            t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-          }
-          document.documentElement.setAttribute("data-theme", t);
+          if (localStorage.getItem("theme") === "dark") t = "dark";
         } catch (e) {
-          document.documentElement.setAttribute("data-theme", "light");
+          /* private mode / storage disabled — fall through to light */
         }
+        document.documentElement.setAttribute("data-theme", t);
       })();
     </script>
     <style>
