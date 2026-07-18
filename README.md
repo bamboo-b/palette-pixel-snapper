@@ -11,7 +11,7 @@
 
 <img src="./static/demo.png" alt="AI生成画像 → グリッドにスナップ → パレット適用" style="width: 100%; image-rendering: pixelated;">
 
-<p align="center"><em>左：AI生成の入力画像　→　中央：グリッドにスナップして整地　→　右：PICO-8パレットを適用</em></p>
+<p align="center"><em>左：AI生成の入力画像　→　中央：グリッドにスナップして整地（色は自動16色に減色）　→　右：PICO-8パレットを適用</em></p>
 
 ---
 
