@@ -460,11 +460,11 @@
         <p class="panel-title">⚙️ お好みで調整 <span class="opt">任意・変えなくてもOK</span></p>
 
         <div class="tabs" role="tablist" aria-label="設定">
-          <button type="button" role="tab" id="tabbtn-palette" aria-controls="tab-palette" aria-selected="true">パレット</button>
-          <button type="button" role="tab" id="tabbtn-effect" aria-controls="tab-effect" aria-selected="false">色数・効果</button>
+          <button type="button" role="tab" id="tabbtn-effect" aria-controls="tab-effect" aria-selected="true">色数・効果</button>
+          <button type="button" role="tab" id="tabbtn-palette" aria-controls="tab-palette" aria-selected="false">パレット</button>
         </div>
 
-        <section id="tab-palette" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-palette">
+        <section id="tab-palette" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-palette" hidden>
           <div class="palette" id="paletteDrop">
             <label for="paletteText">使う色を指定 <span class="hint" style="display: inline; font-size: 0.8rem">(任意 — 使いたい色の見本。無くても自動で減色して変換します)</span></label>
             <textarea id="paletteText" rows="3" placeholder="#1a1a2e, #16213e, ...   （1行1色でもOK / .hex・.gpl・.pal・画像をここにドロップも可）"></textarea>
@@ -488,7 +488,7 @@
           </div>
         </section>
 
-        <section id="tab-effect" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-effect" hidden>
+        <section id="tab-effect" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-effect">
           <div class="field">
             <label><input type="checkbox" id="limitColors" /> 色数を減らす</label>
             <div class="row" style="margin: 0.4rem 0">
